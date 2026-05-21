@@ -36,26 +36,228 @@
 
   <section>
     <h2>The GUC system — <code>pg_settings</code>, scope, reload</h2>
+
+    <p>Every tunable in Postgres is a <strong>GUC</strong> — "grand unified configuration" — and every GUC is exposed through the same view, <code>pg_settings</code>. The view tells you the current value, the unit, the default, the source the value was loaded from, and — most importantly — the <em>context</em>, which says what it takes to change the setting.</p>
+
+    <div class="example">
+      <p class="caption">Inspecting a GUC</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT name, setting, unit, context, source
+FROM   pg_settings
+WHERE  name IN ('shared_buffers','work_mem','max_connections');</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>name</th><th>setting</th><th>unit</th><th>context</th><th>source</th></tr></thead>
+          <tbody>
+            <tr><td>max_connections</td><td class="num">100</td><td>—</td><td>postmaster</td><td>configuration file</td></tr>
+            <tr><td>shared_buffers</td><td class="num">16384</td><td>8kB</td><td>postmaster</td><td>configuration file</td></tr>
+            <tr><td>work_mem</td><td class="num">4096</td><td>kB</td><td>user</td><td>default</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The five context values are worth committing to memory: <code>internal</code> (compile-time, untouchable), <code>postmaster</code> (server restart required), <code>sighup</code> (reloadable with <code>SELECT pg_reload_conf()</code>), <code>backend</code> (set per new connection), and <code>superuser</code> / <code>user</code> (changeable in a live session). Anything labelled <code>postmaster</code> is the kind of change you schedule a maintenance window for; anything <code>sighup</code> can be rolled out without dropping a connection.</p>
+
+    <p>Settings live in a tiered cascade: <code>postgresql.conf</code> at the bottom, then <code>postgresql.auto.conf</code> (written by <code>ALTER SYSTEM</code>), then per-database (<code>ALTER DATABASE app SET …</code>), per-role (<code>ALTER ROLE etl SET …</code>), and finally per-session (<code>SET …</code>) and per-transaction (<code>SET LOCAL …</code>). The narrower scope always wins.</p>
+
+    <div class="example">
+      <p class="caption">Changing a GUC for real</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- Persist a value to postgresql.auto.conf.
+ALTER SYSTEM SET work_mem = '32MB';
+
+-- Reload reloadable settings without a restart.
+SELECT pg_reload_conf();
+
+-- Override for one session.
+SET work_mem = '128MB';
+
+-- Override only for the current transaction.
+BEGIN;
+SET LOCAL work_mem = '512MB';
+SELECT … FROM big_table ORDER BY …;
+COMMIT;</code></pre>
+    </div>
+
+    <aside class="marginalia">
+      <span class="label">Don't hand-edit</span>
+      Never edit <code>postgresql.auto.conf</code> directly. It carries a "do not edit" banner and any change goes through <code>ALTER SYSTEM</code>. Plain <code>postgresql.conf</code> is fair game.
+    </aside>
   </section>
 
   <section>
     <h2>Memory — <code>shared_buffers</code>, <code>work_mem</code>, <code>maintenance_work_mem</code></h2>
+
+    <p>Three settings carve up Postgres's memory budget. They do not overlap, and the right values are functions of the hardware, not the workload — which is why the same starting points apply almost everywhere.</p>
+
+    <p><code>shared_buffers</code> is the single shared cache of disk pages that all backends read from and write into. Past a working-set-sized cache, more buffers help less than you would hope, because the OS page cache underneath is also caching the same data. The canonical starting point is ~25% of RAM; bumping past 40% rarely repays the cost.</p>
+
+    <p><code>work_mem</code> is per-operation: every sort, hash, and hash-join node in a plan gets <em>its own</em> <code>work_mem</code>. A single complex query can use multiples of the limit, and a hundred concurrent connections each running such a query can use a hundred times. The default of 4 MB is conservative because of exactly that multiplier. Raise it cautiously, and prefer raising it per-statement with <code>SET LOCAL</code> for the heavy reporting queries that actually need it.</p>
+
+    <div class="example">
+      <p class="caption">When you can hear the spill</p>
+<pre class="language-sql" data-lang="psql"><code class="language-sql">EXPLAIN (ANALYZE, BUFFERS)
+SELECT customer_id, sum(amount) FROM orders GROUP BY customer_id;
+
+                                  QUERY PLAN
+-----------------------------------------------------------------------------
+ HashAggregate  (cost=18933.0..19042.4 rows=10940 width=12)
+   Group Key: customer_id
+   Batches: 17  Memory Usage: 4145kB  Disk Usage: 21240kB
+   -&gt;  Seq Scan on orders  (cost=0.00..14211.0 rows=944600 width=12)</code></pre>
+    </div>
+
+    <p>"Disk Usage" in a hash aggregate or sort node means <code>work_mem</code> was too small and the operator spilled to a temp file. Raise <code>work_mem</code> until that line disappears.</p>
+
+    <p><code>maintenance_work_mem</code> is the same idea for one-shot maintenance operations: <code>VACUUM</code>, <code>CREATE INDEX</code>, <code>ALTER TABLE … ADD COLUMN</code>. Because there are only a few of these running at a time, you can be generous — 512 MB to 2 GB is normal. <code>autovacuum_work_mem</code> falls back to this value and is the knob to use if you want autovacuum workers to be more frugal than ad-hoc <code>VACUUM</code>.</p>
+
+    <p><code>effective_cache_size</code> is the odd one out — it allocates nothing. It is a hint to the planner about how much of the data is likely cached (counting both Postgres and the OS), used to estimate the cost of repeated index lookups. Set it to ~50–75% of RAM and move on.</p>
   </section>
 
   <section>
     <h2>WAL — <code>wal_buffers</code>, <code>checkpoint_timeout</code>, <code>max_wal_size</code></h2>
+
+    <p>A <strong>checkpoint</strong> is the moment Postgres guarantees that every dirty buffer up to a particular WAL position has been flushed to the heap. It is the safe restart point after a crash: recovery reads WAL from the last checkpoint and replays forward. Frequent checkpoints mean short recovery; infrequent checkpoints mean less I/O, because pages dirtied many times between checkpoints only get flushed once.</p>
+
+    <p>Two settings decide how often a checkpoint fires. <code>checkpoint_timeout</code> sets a wall-clock interval (default five minutes, often raised to fifteen or thirty). <code>max_wal_size</code> sets a volume cap (default 1 GB; on write-heavy workloads, raising it to several gigabytes lets the timeout win, which is what you want). Whichever threshold trips first ends the cycle.</p>
+
+    <div class="example">
+      <p class="caption">A sensible write-heavy baseline</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER SYSTEM SET checkpoint_timeout      = '30min';
+ALTER SYSTEM SET max_wal_size             = '8GB';
+ALTER SYSTEM SET checkpoint_completion_target = 0.9;   -- spread the flush
+SELECT pg_reload_conf();</code></pre>
+    </div>
+
+    <p><code>checkpoint_completion_target</code> spreads the dirty-buffer flush over a fraction of the interval (0.9 by default in recent versions). Without it, every checkpoint would be a brief, painful I/O spike at the boundary.</p>
+
+    <p><code>wal_buffers</code> is the in-memory staging area for WAL records before they hit disk. Auto-tuned to <code>shared_buffers / 32</code>; rarely needs adjustment unless you see <code>wait_event = WALWriteLock</code> contention in <code>pg_stat_activity</code>.</p>
+
+    <div class="callout note">
+      <span class="callout-label">Note</span>
+      <p>The trade-off is straightforward: longer intervals reduce average write amplification but lengthen crash recovery. If your RTO is "a few seconds," keep checkpoints frequent. If your RTO is "a minute" and your write volume is heavy, stretch them out. <code>pg_stat_bgwriter</code> tells you the rate at which checkpoints are firing and whether they're triggered by time or by volume (<code>checkpoints_timed</code> vs <code>checkpoints_req</code>) — you want time-triggered to dominate.</p>
+    </div>
   </section>
 
   <section>
     <h2>Autovacuum tuning</h2>
+
+    <p>Autovacuum runs in the background, finding tables that have accumulated enough dead tuples or enough INSERTs since the last <code>ANALYZE</code> and processing them. The defaults are calibrated for a small database; on any non-trivial table they let bloat snowball before the first vacuum even fires.</p>
+
+    <p>The trigger is per-table and roughly: <em>vacuum when <code>n_dead_tup</code> exceeds <code>autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor × n_live_tup</code></em>. With the default scale factor of 0.2, a 100-million-row table sits at twenty million dead tuples before the worker even notices. That is too much.</p>
+
+    <p>The right adjustment is per-table, not global, and lives in the table's storage parameters:</p>
+
+    <div class="example">
+      <p class="caption">A hot table that needs aggressive vacuuming</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER TABLE orders SET (
+  autovacuum_vacuum_scale_factor  = 0.02,    -- 2% instead of 20%
+  autovacuum_vacuum_threshold     = 10000,
+  autovacuum_analyze_scale_factor = 0.01,
+  autovacuum_vacuum_cost_limit    = 2000     -- let the worker do more per round
+);</code></pre>
+    </div>
+
+    <p>To know whether the workers are keeping up, watch <code>pg_stat_user_tables</code>:</p>
+
+    <div class="example">
+      <p class="caption">Worst-bloated tables in the cluster</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT relname,
+       n_live_tup, n_dead_tup,
+       round(n_dead_tup::numeric / nullif(n_live_tup, 0), 3) AS dead_ratio,
+       last_autovacuum
+FROM   pg_stat_user_tables
+ORDER  BY dead_ratio DESC NULLS LAST
+LIMIT  10;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>relname</th><th class="num">n_live_tup</th><th class="num">n_dead_tup</th><th class="num">dead_ratio</th><th>last_autovacuum</th></tr></thead>
+          <tbody>
+            <tr><td>sessions</td><td class="num">1,204,118</td><td class="num">811,302</td><td class="num">0.674</td><td>2026-05-21 03:14</td></tr>
+            <tr><td>queue</td><td class="num">12,043</td><td class="num">4,872</td><td class="num">0.405</td><td>2026-05-21 03:42</td></tr>
+            <tr><td>orders</td><td class="num">87,201,003</td><td class="num">3,118,520</td><td class="num">0.036</td><td>2026-05-21 02:58</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="callout warning">
+      <span class="callout-label">Operational warning</span>
+      <p>Autovacuum cannot reclaim dead tuples newer than the oldest open transaction in the cluster — the <em>xmin horizon</em>. A single long-running transaction (a forgotten <code>BEGIN</code>, a stuck replication slot, a sloppy ETL job) will block every worker from doing useful work, and <code>n_dead_tup</code> will climb regardless of how aggressive your settings are. Check <code>pg_stat_activity</code> and <code>pg_replication_slots</code> before changing autovacuum parameters.</p>
+    </div>
   </section>
 
   <section>
     <h2>Connections, <code>max_connections</code>, and pooling</h2>
+
+    <p>Every Postgres connection is a real OS process — a postmaster fork with several megabytes of private memory, a snapshot, a transaction state. They are not lightweight. The cost is paid even for idle connections, and the contention on internal locks (lwlocks, the procarray) grows superlinearly past a few hundred backends. The right value of <code>max_connections</code> on most servers is between 100 and 300; people who set it to 5000 usually wish they had not.</p>
+
+    <p>The way to serve more clients than that is a connection pooler in front of the database — almost always <strong>PgBouncer</strong>. It accepts many client connections, multiplexes them onto a small fixed pool of Postgres connections, and adds latency that is unmeasurable for most workloads.</p>
+
+    <p>PgBouncer runs in one of three modes, and the choice has real consequences:</p>
+
+    <dl class="kv">
+      <dt>session pooling</dt>
+      <dd>One backend per client, released on disconnect. Behaves exactly like a direct connection. No win on concurrency.</dd>
+      <dt>transaction pooling</dt>
+      <dd>The backend is returned to the pool at every <code>COMMIT</code> / <code>ROLLBACK</code>. The standard choice. Forbids anything stateful across transactions: prepared statements (use <code>PREPARE … EXECUTE</code> at most within one tx), <code>SET</code> (use <code>SET LOCAL</code>), session-scoped advisory locks, <code>LISTEN</code>/<code>NOTIFY</code>, cursors held outside a transaction.</dd>
+      <dt>statement pooling</dt>
+      <dd>The backend is returned after every statement. Forbids even multi-statement transactions. Almost never the right answer.</dd>
+    </dl>
+
+    <p>The sizing rule of thumb: <code>max_connections</code> on the database equals the sum of pool sizes across all PgBouncer instances, with a little headroom for administrative connections. Picking <code>max_connections = 200</code> and giving PgBouncer a pool of 180 is normal.</p>
+
+    <aside class="marginalia">
+      <span class="label">Idle-in-tx, again</span>
+      A pooled connection that the application has handed back without committing leaves a backend stuck in <code>idle in transaction</code>, and pooling does not save you from that. <code>idle_in_transaction_session_timeout</code> is still essential.
+    </aside>
   </section>
 
   <section>
     <h2><code>pg_stat_statements</code></h2>
+
+    <p>The single most useful observability extension Postgres ships. Once loaded, it records — per normalised query — the call count, total and mean execution time, rows returned, buffer hits and reads, and a stable <code>queryid</code> hash. Queries are normalised by replacing literals with placeholders, so <code>SELECT * FROM orders WHERE id = 7</code> and <code>SELECT * FROM orders WHERE id = 8</code> collapse to a single row in the view.</p>
+
+    <p>Enable it by adding it to <code>shared_preload_libraries</code> (server restart required), then creating the extension in any database you want to query from:</p>
+
+    <div class="example">
+      <p class="caption">Setup</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER SYSTEM SET shared_preload_libraries = 'pg_stat_statements';
+-- restart Postgres
+
+CREATE EXTENSION pg_stat_statements;</code></pre>
+    </div>
+
+    <p>The single most valuable query against it is "what queries are spending the most cumulative time," because that is where optimisation effort pays back:</p>
+
+    <div class="example">
+      <p class="caption">Top ten by total time</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT round(total_exec_time::numeric / 1000, 1) AS total_s,
+       calls,
+       round(mean_exec_time::numeric, 2)         AS mean_ms,
+       round(100 * total_exec_time
+             / sum(total_exec_time) OVER (), 1)  AS pct,
+       left(query, 80)                           AS query
+FROM   pg_stat_statements
+ORDER  BY total_exec_time DESC
+LIMIT  10;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th class="num">total_s</th><th class="num">calls</th><th class="num">mean_ms</th><th class="num">pct</th><th>query</th></tr></thead>
+          <tbody>
+            <tr><td class="num">14,820.3</td><td class="num">2,108,441</td><td class="num">7.03</td><td class="num">41.2</td><td>SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2</td></tr>
+            <tr><td class="num">6,011.8</td><td class="num">118,209</td><td class="num">50.85</td><td class="num">16.7</td><td>UPDATE sessions SET last_seen = $1 WHERE token = $2</td></tr>
+            <tr><td class="num">3,442.1</td><td class="num">8,003</td><td class="num">430.10</td><td class="num">9.6</td><td>SELECT count(*) FROM events WHERE occurred_at &gt; $1</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>Three different shapes of problem are visible in three rows: a high-call query with a sub-10 ms mean (the right target for an index check), a moderate-call query with a 50 ms mean (the index probably exists but is missing a column), and a low-call query with a long mean (a reporting query worth running through <code>EXPLAIN</code>). The view does not solve any of them — but it tells you which ones are actually worth your time.</p>
+
+    <p>Reset the counters with <code>SELECT pg_stat_statements_reset()</code> when you ship a change and want to measure its effect from scratch.</p>
   </section>
 
   <div class="cheat-sheet">

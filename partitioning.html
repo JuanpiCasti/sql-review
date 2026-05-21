@@ -36,26 +36,238 @@
 
   <section>
     <h2>Declarative partitioning vs inheritance</h2>
+
+    <p>Before PG 10, partitioning was a do-it-yourself affair built on top of table <strong>inheritance</strong>: you created a parent table, a child table for each partition that <code>INHERITS</code> from it, a <code>CHECK</code> constraint on each child describing its slice of the key, and a row-routing trigger on the parent that decoded each <code>INSERT</code> and forwarded it to the right child. The planner used the <code>CHECK</code> constraints to exclude irrelevant children (<em>constraint exclusion</em>), but everything else — routing, attach, detach, foreign-key plumbing — was application code.</p>
+
+    <p>Declarative partitioning replaced all of that with one keyword on <code>CREATE TABLE</code>. The parent now knows it is partitioned, the children are declared as <code>PARTITION OF</code> a parent with their bounds inline, and inserts route themselves. The planner uses real partition metadata instead of pattern-matching on <code>CHECK</code> constraints, which is both faster and more honest.</p>
+
+    <div class="example">
+      <p class="caption">The old way, kept here as a museum piece</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE events (id bigserial, occurred_at timestamptz, payload jsonb);
+
+CREATE TABLE events_2025_01 (
+  CHECK (occurred_at &gt;= '2025-01-01' AND occurred_at &lt; '2025-02-01')
+) INHERITS (events);
+
+CREATE OR REPLACE FUNCTION events_router() RETURNS trigger AS $$
+BEGIN
+  IF NEW.occurred_at &gt;= '2025-01-01' AND NEW.occurred_at &lt; '2025-02-01' THEN
+    INSERT INTO events_2025_01 VALUES (NEW.*);
+  -- ... a branch per month, forever ...
+  END IF;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER events_route BEFORE INSERT ON events
+  FOR EACH ROW EXECUTE FUNCTION events_router();</code></pre>
+    </div>
+
+    <aside class="marginalia">
+      <span class="label">Why look back</span>
+      You will still find inheritance-based partitioning in older schemas and in extensions like <code>pg_partman</code>'s pre-10 mode. Read it, understand it, and migrate it to declarative — the maintenance cost goes to near zero.
+    </aside>
+
+    <p>The declarative equivalent is two statements and no triggers. Everything else in this chapter assumes you are on the declarative side.</p>
   </section>
 
   <section>
     <h2><code>RANGE</code>, <code>LIST</code>, <code>HASH</code></h2>
+
+    <p>A partitioned table has a single <strong>partition key</strong> — one or more columns, plus a strategy that says how a row's key value maps to a partition. There are three strategies, and the choice is dictated by the shape of the data, not by taste.</p>
+
+    <p><code>RANGE</code> is the workhorse. It carves the key space into ordered, half-open intervals — <code>[low, high)</code> — and is the right answer whenever the key is monotonic: a timestamp, a sequential ID, a version number. Each partition holds a contiguous slice; dropping "everything older than 12 months" becomes a single <code>DETACH</code>.</p>
+
+    <div class="example">
+      <p class="caption">A monthly events table</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE events (
+  id          bigint  GENERATED ALWAYS AS IDENTITY,
+  occurred_at timestamptz NOT NULL,
+  payload     jsonb,
+  PRIMARY KEY (id, occurred_at)        -- must include the partition key
+) PARTITION BY RANGE (occurred_at);
+
+CREATE TABLE events_2025_01 PARTITION OF events
+  FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
+
+CREATE TABLE events_2025_02 PARTITION OF events
+  FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');</code></pre>
+    </div>
+
+    <p><code>LIST</code> partitions by an explicit set of discrete values per child. Think region codes, tenant IDs, status enums — anything where there is no "between," only "in this set or that one." It is the strategy used most often for multi-tenant tables where each large customer gets its own partition and the long tail shares a default.</p>
+
+    <div class="example">
+      <p class="caption">Customers split by region</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE customers (
+  id      bigint GENERATED ALWAYS AS IDENTITY,
+  region  text   NOT NULL,
+  email   text,
+  PRIMARY KEY (id, region)
+) PARTITION BY LIST (region);
+
+CREATE TABLE customers_eu PARTITION OF customers FOR VALUES IN ('DE','FR','ES','IT');
+CREATE TABLE customers_us PARTITION OF customers FOR VALUES IN ('US','CA');
+CREATE TABLE customers_other PARTITION OF customers DEFAULT;</code></pre>
+    </div>
+
+    <p><code>HASH</code> is what you reach for when there is no natural slicing key — only the need to spread write load evenly across N children. Postgres hashes the key with a deterministic function and assigns the row to <code>hash mod N</code>. You give up range pruning (no <code>WHERE id BETWEEN …</code> can skip partitions) in exchange for an even distribution.</p>
+
+    <div class="example">
+      <p class="caption">An audit log spread across eight partitions</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE audit_log (
+  id       bigint GENERATED ALWAYS AS IDENTITY,
+  actor_id bigint NOT NULL,
+  at       timestamptz NOT NULL DEFAULT now(),
+  detail   jsonb,
+  PRIMARY KEY (id, actor_id)
+) PARTITION BY HASH (actor_id);
+
+CREATE TABLE audit_log_0 PARTITION OF audit_log FOR VALUES WITH (MODULUS 8, REMAINDER 0);
+CREATE TABLE audit_log_1 PARTITION OF audit_log FOR VALUES WITH (MODULUS 8, REMAINDER 1);
+-- ... through REMAINDER 7</code></pre>
+    </div>
+
+    <p>You can compose strategies — a <code>RANGE</code>-partitioned table whose children are themselves <code>HASH</code>-partitioned is a common pattern for very large time-series with hot recent buckets. The composition is implemented exactly as it reads: each child is a partitioned table in its own right.</p>
   </section>
 
   <section>
     <h2>Partition pruning and the planner</h2>
+
+    <p><strong>Partition pruning</strong> is the optimisation that makes the whole feature pay off. When the planner can prove from the <code>WHERE</code> clause that a partition cannot contain any matching rows, it skips that partition entirely — no scan, no lock, no presence in the plan tree. On a thousand-partition table, a well-pruned query reads from one child.</p>
+
+    <p>Pruning fires <em>only</em> on conditions over the partition key. A filter on any other column reaches every partition, because the planner has no way to know which children it lives in. This is the single most important thing to internalise about partitioning: <em>the key choice is the query plan</em>.</p>
+
+    <div class="example">
+      <p class="caption">A pruned plan touches one child</p>
+<pre class="language-sql" data-lang="psql"><code class="language-sql">EXPLAIN SELECT count(*) FROM events
+WHERE occurred_at &gt;= '2025-02-10' AND occurred_at &lt; '2025-02-11';
+
+                            QUERY PLAN
+-------------------------------------------------------------------
+ Aggregate
+   -&gt;  Seq Scan on events_2025_02 events
+         Filter: (occurred_at &gt;= '2025-02-10' AND occurred_at &lt; '2025-02-11')</code></pre>
+    </div>
+
+    <p>Compare to the same query with a non-key filter, where every partition appears in the plan:</p>
+
+    <div class="example">
+      <p class="caption">A filter on a non-key column hits every child</p>
+<pre class="language-sql" data-lang="psql"><code class="language-sql">EXPLAIN SELECT count(*) FROM events WHERE payload-&gt;&gt;'type' = 'signup';
+
+                                QUERY PLAN
+---------------------------------------------------------------------------
+ Aggregate
+   -&gt;  Append
+         -&gt;  Seq Scan on events_2025_01 events_1
+         -&gt;  Seq Scan on events_2025_02 events_2
+         -&gt;  Seq Scan on events_2025_03 events_3
+         -&gt;  ... one branch per partition ...</code></pre>
+    </div>
+
+    <p>Pruning happens both at <em>plan time</em> (when the bounds are known from constant literals) and at <em>execution time</em> (when they come from a parameterised prepared statement or a join). The latter is why an <code>EXPLAIN</code> may show all partitions in the plan tree while <code>EXPLAIN ANALYZE</code> reports <code>Partitions removed: 11</code> for the actual run.</p>
+
+    <div class="callout note">
+      <span class="callout-label">Note</span>
+      <p>The toggle is <code>enable_partition_pruning</code> (on by default). The older <code>constraint_exclusion</code> GUC controls inheritance-style pruning only and is mostly irrelevant on modern declarative tables — leave it at <code>partition</code>.</p>
+    </div>
   </section>
 
   <section>
     <h2>Attaching and detaching without long locks</h2>
+
+    <p>Bringing a new partition into a table looks innocuous — <code>ALTER TABLE … ATTACH PARTITION …</code> — but it takes an <code>ACCESS EXCLUSIVE</code> lock on the parent and scans the entire candidate child to verify that every row satisfies the partition's bounds. On a hot OLTP table with a 200 GB candidate, both of those are unacceptable in production.</p>
+
+    <p>The workaround is to give Postgres proof, ahead of time, that the scan is unnecessary. Add a <code>CHECK</code> constraint matching the future partition's bounds, then attach — the planner sees the matching constraint and skips the scan. The lock on the parent is still <code>ACCESS EXCLUSIVE</code>, but it is now held only for the moment it takes to update the catalog.</p>
+
+    <div class="example">
+      <p class="caption">Attach without the long scan</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- 1. Build the new partition as a standalone table.
+CREATE TABLE events_2025_03 (LIKE events INCLUDING ALL);
+
+-- 2. Load it (COPY, INSERT … SELECT, whatever).
+\copy events_2025_03 FROM 'march.csv' WITH (FORMAT csv)
+
+-- 3. Pre-validate with a CHECK matching the bounds.
+ALTER TABLE events_2025_03
+  ADD CONSTRAINT events_2025_03_range
+  CHECK (occurred_at &gt;= '2025-03-01' AND occurred_at &lt; '2025-04-01') NOT VALID;
+ALTER TABLE events_2025_03 VALIDATE CONSTRAINT events_2025_03_range;
+
+-- 4. Attach. No table scan; lock held only briefly.
+ALTER TABLE events
+  ATTACH PARTITION events_2025_03
+  FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
+
+-- 5. The redundant CHECK can now be dropped.
+ALTER TABLE events_2025_03 DROP CONSTRAINT events_2025_03_range;</code></pre>
+    </div>
+
+    <p>Detach is the symmetrical operation, and the unqualified form has the same problem: <code>ALTER TABLE … DETACH PARTITION</code> takes <code>ACCESS EXCLUSIVE</code> on the parent. PG 14 introduced <code>DETACH PARTITION … CONCURRENTLY</code>, which runs in two steps with weaker locks — first marks the partition as detaching (only blocks new queries that would attempt pruning against it), then finalises after existing transactions drain. It is how you drop old data without an outage window.</p>
+
+    <div class="example">
+      <p class="caption">Dropping last year's data</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER TABLE events DETACH PARTITION events_2024_03 CONCURRENTLY;
+DROP TABLE events_2024_03;</code></pre>
+    </div>
+
+    <aside class="marginalia">
+      <span class="label">Cannot run inside a transaction</span>
+      <code>DETACH PARTITION CONCURRENTLY</code> is one of the small set of statements that cannot run inside <code>BEGIN … COMMIT</code>, alongside <code>CREATE INDEX CONCURRENTLY</code>. Your migration tool needs to mark the step as non-transactional.
+    </aside>
   </section>
 
   <section>
     <h2>Default partitions and partition-wise joins</h2>
+
+    <p>A <strong>default partition</strong> catches every row that does not match any other partition's bounds. It is useful as a safety net during a rollout — better than a constraint violation — and as the long-tail bucket for <code>LIST</code> partitioning where you only want explicit partitions for the largest tenants.</p>
+
+    <p>The catch is that adding a <em>new</em> partition to a table that already has a default requires Postgres to scan the default and prove that none of its rows belong in the new bounds. That scan runs under an <code>ACCESS EXCLUSIVE</code> lock on the default partition. On a populated default, the wait can be long; the mitigation is the same <code>CHECK</code>-then-attach pattern from the previous section, applied to the default itself.</p>
+
+    <div class="callout warning">
+      <span class="callout-label">Operational warning</span>
+      <p>A default partition that has filled up with millions of rows because nobody created the next month's partition on time is a classic incident. Alert on default-partition row counts; better, automate the partition rollover with <code>pg_partman</code> or a scheduled function.</p>
+    </div>
+
+    <p><strong>Partition-wise joins</strong> are the planner's reward for partitioning two tables on the same key with matching bounds. With <code>enable_partitionwise_join</code> on, the planner joins each pair of corresponding partitions independently — twelve smaller hash joins instead of one large one — and the same for aggregates under <code>enable_partitionwise_aggregate</code>. Both are off by default because the planner cost of considering them is non-trivial; turn them on when you have wide partitioned tables joined in the hot path.</p>
+
+    <div class="example">
+      <p class="caption">Turning the optimisations on</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SET enable_partitionwise_join = on;
+SET enable_partitionwise_aggregate = on;</code></pre>
+    </div>
   </section>
 
   <section>
     <h2>Pitfalls — no global indexes, <code>UNIQUE</code> must include the partition key</h2>
+
+    <p>Postgres has no global indexes across partitions. Every index lives on exactly one partition; an "index on the parent" is shorthand for "an index template that Postgres propagates to each child." This has two consequences that bite newcomers.</p>
+
+    <p>First, every <code>UNIQUE</code> or <code>PRIMARY KEY</code> constraint on a partitioned table <em>must include the partition key</em>. There is no other way for Postgres to enforce uniqueness without scanning every partition on every insert — and the design refuses to do that. If your application logic needs a column to be globally unique, the partition key is forced to either be that column or be derivable from it.</p>
+
+    <div class="example">
+      <p class="caption">Why a bare email PK fails</p>
+<pre class="language-sql" data-lang="psql"><code class="language-sql">CREATE TABLE users (
+  id    bigint GENERATED ALWAYS AS IDENTITY,
+  email text UNIQUE,                       -- ✗
+  region text NOT NULL
+) PARTITION BY LIST (region);
+
+-- ERROR:  unique constraint on partitioned table must include all
+--         partitioning columns
+-- DETAIL: UNIQUE constraint on table "users" lacks column "region"</code></pre>
+    </div>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Pitfall</span>
+      <p>The workaround is some combination of: (a) include the partition key in the PK (<code>PRIMARY KEY (email, region)</code>), at the cost of allowing duplicates across regions; (b) maintain a non-partitioned dedup table (<code>users_email (email PK, user_id)</code>) and enforce uniqueness in application code via an insert into both tables in the same transaction; or (c) reconsider whether the table needs partitioning at all. There is no fourth option.</p>
+    </div>
+
+    <p>Second, foreign keys referencing a partitioned table only work from PG 12 onward, and the cascade machinery has to fan out across every partition — on a partitioned parent with hundreds of children, a <code>DELETE CASCADE</code> can be surprisingly expensive. Foreign keys <em>from</em> a partitioned table to a non-partitioned one are unremarkable and cheap.</p>
+
+    <aside class="marginalia">
+      <span class="label">Concurrent indexes</span>
+      <code>CREATE INDEX</code> on a partitioned table is non-concurrent in the same way <code>ATTACH PARTITION</code> is — it locks each child while building. The pattern is to build the index on each partition with <code>CREATE INDEX CONCURRENTLY</code> separately, then run <code>CREATE INDEX ON parent (…) ONLY</code> followed by <code>ALTER INDEX … ATTACH PARTITION …</code> per child.
+    </aside>
   </section>
 
   <div class="cheat-sheet">

@@ -36,26 +36,214 @@
 
   <section>
     <h2>What WAL is and how it gets written</h2>
+
+    <p>Before Postgres modifies a single heap page on disk, it writes a record describing the change to an append-only file in <code>pg_wal/</code>. Only after that record is durably persisted is the in-memory page change considered safe. This is the <strong>write-ahead log</strong>, and it is the keystone of every durability and replication feature in the system: crash recovery, streaming replication, logical replication, PITR — all of them are different ways of reading the same log.</p>
+
+    <p>The log is a sequence of fixed-size <em>segments</em> (16 MB by default), and every byte in it has a monotonically increasing position called the <strong>LSN</strong> — log sequence number, printed as <code>0/1A3F2C8</code>. The LSN is the universal coordinate of "where in time" the cluster is. <code>pg_current_wal_lsn()</code> on the primary and <code>pg_last_wal_replay_lsn()</code> on a standby are the most useful single readings.</p>
+
+    <div class="example">
+      <p class="caption">Where the log is, and where it's at</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT pg_current_wal_lsn()              AS current_lsn,
+       pg_walfile_name(pg_current_wal_lsn()) AS current_segment;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>current_lsn</th><th>current_segment</th></tr></thead>
+          <tbody>
+            <tr><td><code>0/1A3F2C8</code></td><td><code>000000010000000000000001</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The write path: a backend appends WAL records to <code>wal_buffers</code> in shared memory. At <code>COMMIT</code>, the backend calls <code>XLogFlush</code>, which writes and fsyncs all buffered WAL up to and including its own commit record. Only then does <code>COMMIT</code> return to the client. A crash before the fsync loses the transaction; a crash after it does not.</p>
+
+    <p>Crash recovery is the symmetric operation. On startup, Postgres locates the most recent checkpoint in WAL, replays every record from there forward, and the cluster comes up at the LSN of the last durable record. Nothing committed is ever lost; nothing uncommitted is ever applied.</p>
+
+    <aside class="marginalia">
+      <span class="label">fsync is real</span>
+      <code>fsync = off</code> exists. It makes writes vastly faster and makes durability a fiction — a power loss can corrupt the cluster beyond repair. Use it only on throwaway test databases.
+    </aside>
   </section>
 
   <section>
     <h2>Physical replication — streaming, replication slots</h2>
+
+    <p><strong>Streaming replication</strong> is the simplest replica shape Postgres offers: a standby connects to the primary, requests WAL starting at a particular LSN, and applies the records byte-for-byte. The standby is a binary clone — same Postgres version, same architecture, same on-disk layout. Read-only queries against it (<em>hot standby</em>) see exactly the data the primary saw a moment ago, minus replication lag.</p>
+
+    <div class="example">
+      <p class="caption">Bringing up a standby — the broad strokes</p>
+<pre class="language-sql" data-lang="bash"><code class="language-sql"># 1. Base backup of the primary into the standby's data directory.
+pg_basebackup -h primary.internal -U replicator -D /var/lib/postgres/data -R
+
+# 2. The -R flag wrote standby.signal and primary_conninfo into
+#    postgresql.auto.conf for us. Start the server.
+pg_ctl -D /var/lib/postgres/data start</code></pre>
+    </div>
+
+    <p>The key piece on the primary is the <strong>replication slot</strong>. A slot is a server-side bookmark that records the oldest LSN any consumer (standby, logical subscriber, backup tool) still needs. As long as a slot exists, Postgres refuses to delete WAL segments past the slot's position — which is exactly what you want when a standby goes offline and reconnects an hour later.</p>
+
+    <div class="example">
+      <p class="caption">Slots in use</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT slot_name, slot_type, active,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS retained_bytes
+FROM   pg_replication_slots;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>slot_name</th><th>slot_type</th><th>active</th><th class="num">retained_bytes</th></tr></thead>
+          <tbody>
+            <tr><td>standby_dc2</td><td>physical</td><td>t</td><td class="num">4,718,592</td></tr>
+            <tr><td>analytics_sub</td><td>logical</td><td>t</td><td class="num">122,318,944</td></tr>
+            <tr><td>orphan</td><td>physical</td><td>f</td><td class="num">42,901,778,432</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="callout warning">
+      <span class="callout-label">Operational warning</span>
+      <p>The third row is what kills clusters. A slot that no consumer is reading from never advances, and the WAL it pins grows without bound until <code>pg_wal/</code> fills the disk and the primary refuses writes. Alert on <code>pg_replication_slots</code> with <code>active = false</code> and on <code>retained_bytes</code> over a sane threshold. <code>max_slot_wal_keep_size</code> caps the damage by letting slots be invalidated rather than filling the disk.</p>
+    </div>
   </section>
 
   <section>
     <h2>Logical replication and <code>wal_level = logical</code></h2>
+
+    <p>Streaming replication ships raw WAL — page images, vacuum records, the lot. The standby is required to be identical to the primary, and there is no way to replicate <em>some</em> of the data, much less reshape it on the way. <strong>Logical replication</strong> solves both. Postgres decodes WAL into a stream of row-level change events (insert, update, delete) and publishes them per table; subscribers replay those events against tables of their choosing.</p>
+
+    <p>You opt in by raising <code>wal_level</code> from <code>replica</code> (the default, sufficient for physical) to <code>logical</code>, which makes the decoder include the extra information needed to reconstruct row changes. The cost is a small amount of additional WAL volume and a restart.</p>
+
+    <div class="example">
+      <p class="caption">A publication on the primary, a subscription on the analytics box</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- on the primary, after `ALTER SYSTEM SET wal_level = logical` + restart
+CREATE PUBLICATION app_pub FOR TABLE orders, order_items, customers;
+
+-- on the subscriber
+CREATE SUBSCRIPTION app_sub
+  CONNECTION 'host=primary.internal user=repl dbname=app'
+  PUBLICATION app_pub;</code></pre>
+    </div>
+
+    <p>What logical buys you: cross-version replication (PG 14 → PG 16 is fine), partial schemas (replicate only what you need), fan-out (one publication, many subscribers), and zero-downtime major upgrades via a blue-green cutover. What it does not handle, at least not gracefully: DDL changes (you must run them on every side), sequences (the values are not propagated, only the rows that consumed them), very large transactions (decoded into memory before being sent, with PG 14+'s streaming alleviating but not eliminating the cost), and conflict resolution (last-write-wins or break-the-replica are the only built-in options).</p>
+
+    <aside class="marginalia">
+      <span class="label">Replica identity</span>
+      For an <code>UPDATE</code> or <code>DELETE</code> to logical-replicate, Postgres needs a way to identify the old row on the subscriber. The default is the primary key; tables without one need <code>ALTER TABLE … REPLICA IDENTITY FULL</code>, which logs the full old row. Cheap on narrow tables, painful on wide ones.
+    </aside>
   </section>
 
   <section>
     <h2>Synchronous vs asynchronous commit</h2>
+
+    <p>By default, <code>COMMIT</code> on the primary returns as soon as the local WAL fsync completes. The standby gets the records moments later, but the primary does not wait. If the primary dies before the standby has caught up, the missing transactions are gone. This is <em>asynchronous replication</em>, and for many workloads — where a few seconds of potential data loss on a hard failover is acceptable — it is the right trade.</p>
+
+    <p>Synchronous commit moves that trade. <code>synchronous_commit</code> is a per-session GUC with several levels, each waiting for something more:</p>
+
+    <dl class="kv">
+      <dt><code>off</code></dt>
+      <dd>Don't even wait for the local fsync. Fast, lossy — a crash can lose recent commits. Useful only for bulk-load workloads where you're going to verify and retry.</dd>
+      <dt><code>local</code></dt>
+      <dd>Wait for local fsync. Equivalent to the old <code>fsync = on, synchronous_standby_names = ''</code>. No replica wait.</dd>
+      <dt><code>on</code> (default)</dt>
+      <dd>Wait for local fsync; if <code>synchronous_standby_names</code> is set, also wait for the configured replicas to fsync the same WAL.</dd>
+      <dt><code>remote_write</code></dt>
+      <dd>Wait until the standby has received and written (but not yet fsynced) the WAL. Faster than <code>on</code>, weaker durability.</dd>
+      <dt><code>remote_apply</code></dt>
+      <dd>Wait until the standby has actually replayed the WAL and the change is visible to queries against it. Strongest guarantee, highest latency.</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption">Synchronous to one of two standbys</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER SYSTEM SET synchronous_commit = on;
+ALTER SYSTEM SET synchronous_standby_names = 'ANY 1 (standby_dc1, standby_dc2)';
+SELECT pg_reload_conf();</code></pre>
+    </div>
+
+    <p><code>ANY 1 (…)</code> means "any one of the named standbys must ack." <code>FIRST 1 (…)</code> means "the named standbys in priority order; the first one in the list is preferred." The <code>ANY</code> form is what you want for a cross-AZ setup where either AZ ack'ing is fine.</p>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Pitfall</span>
+      <p>If you list standbys in <code>synchronous_standby_names</code> and all of them go down, every <code>COMMIT</code> on the primary blocks indefinitely. The primary is up and refuses writes — exactly the right answer if you cannot afford to lose data, exactly the wrong answer if you cannot afford downtime. Pick deliberately; <code>synchronous_commit = local</code> per-session is the per-transaction escape hatch when an individual statement does not need the guarantee.</p>
+    </div>
   </section>
 
   <section>
     <h2>Failover, <code>pg_rewind</code>, replication lag</h2>
+
+    <p>Failover is the act of promoting a standby to be the new primary because the old one is gone. Mechanically it is one command: <code>pg_ctl promote</code> (or, equivalently, <code>SELECT pg_promote()</code>). The standby stops replaying, ends recovery mode, accepts writes, and begins a new <em>timeline</em> — a new branch in the WAL history that diverges at the moment of promotion.</p>
+
+    <p>The harder problem is what to do with the old primary, if it ever comes back. Its WAL diverged from the new primary's at promotion; their LSNs no longer agree. Re-attaching it as a standby naïvely would require a full <code>pg_basebackup</code> — terabytes of copying. <strong><code>pg_rewind</code></strong> exists for exactly this case: it compares the two clusters' WAL, identifies the divergence point, copies only the pages that have changed since, and produces a data directory that can stream from the new primary as a standby.</p>
+
+    <div class="example">
+      <p class="caption">Resync after failover</p>
+<pre class="language-sql" data-lang="bash"><code class="language-sql"># On the old primary, now stopped:
+pg_rewind --target-pgdata=/var/lib/postgres/data \
+          --source-server='host=new-primary.internal user=replicator' \
+          --progress
+
+# Then write standby.signal + primary_conninfo and start it as a standby.
+touch /var/lib/postgres/data/standby.signal
+pg_ctl -D /var/lib/postgres/data start</code></pre>
+    </div>
+
+    <p>Lag is what you watch before, during, and after. <code>pg_stat_replication</code> on the primary has a row per connected standby with the LSNs at each stage (write, flush, replay) and the corresponding lag intervals:</p>
+
+    <div class="example">
+      <p class="caption">Per-standby lag</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT application_name, state,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS replay_bytes,
+       write_lag, flush_lag, replay_lag
+FROM   pg_stat_replication;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>application_name</th><th>state</th><th class="num">replay_bytes</th><th>write_lag</th><th>flush_lag</th><th>replay_lag</th></tr></thead>
+          <tbody>
+            <tr><td>standby_dc1</td><td>streaming</td><td class="num">81,920</td><td>00:00:00.012</td><td>00:00:00.018</td><td>00:00:00.041</td></tr>
+            <tr><td>standby_dc2</td><td>streaming</td><td class="num">4,718,592</td><td>00:00:00.211</td><td>00:00:00.219</td><td>00:00:01.804</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>A replica with healthy network and adequate hardware should sit at near-zero replay lag. Sustained lag growth means either the standby cannot keep up (CPU or I/O on the replica) or it is being held back by a long read query and <code>hot_standby_feedback</code> behaviour. Both are findable in <code>pg_stat_activity</code> on the standby.</p>
   </section>
 
   <section>
     <h2>PITR with <code>pg_basebackup</code> + WAL archive</h2>
+
+    <p><strong>Point-in-time recovery</strong> is the discipline that protects you against everything streaming replication does not — application-level data corruption, accidental <code>DROP TABLE</code>, a bug that wrote nonsense for an hour before anybody noticed. The mechanism: take a periodic <em>base backup</em> of the cluster, archive every WAL segment as it is filled, and you can restore to any LSN or timestamp between the backup and the most recent archived segment.</p>
+
+    <p>Two settings turn the archive on. <code>archive_mode = on</code> tells the server to invoke a shell command for each completed segment; <code>archive_command</code> is the command. It must copy the file to durable, off-cluster storage and return zero on success — Postgres retries on failure but cannot reclaim WAL until the archive accepts it.</p>
+
+    <div class="example">
+      <p class="caption">A minimal archive_command</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER SYSTEM SET archive_mode = on;
+ALTER SYSTEM SET archive_command = 'test ! -f /wal-archive/%f &amp;&amp; cp %p /wal-archive/%f';
+-- restart required to change archive_mode</code></pre>
+    </div>
+
+    <p>The base backup is taken with <code>pg_basebackup</code>, which streams a consistent on-disk snapshot of the cluster while it continues to accept writes. The LSN at the start of the backup is what recovery rewinds to before replaying WAL forward.</p>
+
+    <div class="example">
+      <p class="caption">Restoring to 14:32 yesterday</p>
+<pre class="language-sql" data-lang="bash"><code class="language-sql"># Restore the base backup into a new data directory, then add:
+echo "restore_command = 'cp /wal-archive/%f %p'"                &gt; recovery.conf
+echo "recovery_target_time = '2026-05-20 14:32:00+00'"          &gt;&gt; recovery.conf
+echo "recovery_target_action = 'promote'"                        &gt;&gt; recovery.conf
+touch /var/lib/postgres/data/recovery.signal
+
+pg_ctl start
+# Postgres replays archived WAL up to the target time and then promotes.</code></pre>
+    </div>
+
+    <p>The base backup is straightforward; the WAL archive is also straightforward; the discipline that matters is <em>testing the restore</em>. Backups that have never been restored are not backups. Schedule a periodic restore-into-a-throwaway-cluster job and let it run unattended — it is the only way to know your backup chain works before you need it.</p>
+
+    <aside class="marginalia">
+      <span class="label">Use a real tool</span>
+      Rolling your own <code>archive_command</code> with <code>cp</code> works for a demo. In production, use <code>pgBackRest</code> or <code>wal-g</code>. Both handle parallel upload, encryption, retention, incremental backups, and — crucially — the verification step you would otherwise forget.
+    </aside>
   </section>
 
   <div class="cheat-sheet">

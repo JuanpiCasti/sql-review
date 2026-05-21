@@ -36,26 +36,271 @@
 
   <section>
     <h2><code>tsvector</code> and <code>tsquery</code></h2>
+
+    <p>The whole machinery rests on two types. A <strong>tsvector</strong> is a sorted, deduplicated list of <em>lexemes</em> — normalised root forms of the words in a document — each carrying the positions where it appeared in the source text. A <strong>tsquery</strong> is a parsed boolean expression over lexemes, with operators for <code>AND</code>, <code>OR</code>, <code>NOT</code>, and phrase distance. Matching is the predicate that decides whether a query's tree evaluates to true against a vector.</p>
+
+    <div class="example">
+      <p class="caption">A vector contains lexemes, not words</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT to_tsvector('english', 'The quick brown foxes were jumping over the lazy dogs');</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>to_tsvector</th></tr></thead>
+          <tbody>
+            <tr><td><code>'brown':3 'dog':10 'fox':4 'jump':6 'lazi':9 'quick':2</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>Three things to notice in that result. The stop words (<em>the</em>, <em>were</em>, <em>over</em>) are gone — the <code>english</code> configuration drops them. The remaining words have been <em>stemmed</em> — <em>foxes</em> → <code>fox</code>, <em>jumping</em> → <code>jump</code>, <em>lazy</em> → <code>lazi</code>. And each lexeme carries its position in the original token stream, which is what makes phrase queries possible.</p>
+
+    <p>Queries come in three flavours, each parsing input differently. <code>to_tsquery</code> expects operator-laden input (<code>&amp;</code> / <code>|</code> / <code>!</code> / <code>&lt;-&gt;</code>) and is unsuitable for user-provided strings; <code>plainto_tsquery</code> takes plain text and ANDs the terms; <code>websearch_to_tsquery</code> implements the Google-style syntax most users already know — quoted phrases, <code>OR</code>, leading <code>-</code> for exclusion.</p>
+
+    <div class="example">
+      <p class="caption">The three query parsers, side by side</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT to_tsquery        ('english', 'quick &amp; !lazy')          AS strict,
+       plainto_tsquery   ('english', 'quick brown foxes')     AS plain,
+       websearch_to_tsquery('english', '"brown fox" OR -lazy') AS web;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>strict</th><th>plain</th><th>web</th></tr></thead>
+          <tbody>
+            <tr><td><code>'quick' &amp; !'lazi'</code></td><td><code>'quick' &amp; 'brown' &amp; 'fox'</code></td><td><code>'brown' &lt;-&gt; 'fox' | !'lazi'</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The <code>&lt;-&gt;</code> in the last result is the phrase-distance operator: <em>brown</em> immediately followed by <em>fox</em>. <code>&lt;N&gt;</code> with a number relaxes "immediately" to "within N positions."</p>
   </section>
 
   <section>
     <h2>Dictionaries, stemmers, configurations</h2>
+
+    <p>The pipeline from raw text to <code>tsvector</code> runs through a <strong>text search configuration</strong>, which is itself a chain: a parser tokenises the input into typed tokens (<em>word</em>, <em>email</em>, <em>url</em>, <em>num</em>, …), and each token type is passed through an ordered list of <em>dictionaries</em>. The first dictionary that recognises a token decides what lexeme — if any — to emit.</p>
+
+    <p>The shipped <code>english</code> configuration wires the default parser to a stop-word filter (<code>english_stem</code>'s stop list) and the Snowball English stemmer. Same shape for the two dozen other languages Postgres ships with. You can see exactly what a configuration is doing with <code>ts_debug</code>:</p>
+
+    <div class="example">
+      <p class="caption">Per-token tracing</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT alias, token, dictionary, lexemes
+FROM ts_debug('english', 'Running queries against PostgreSQL');</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>alias</th><th>token</th><th>dictionary</th><th>lexemes</th></tr></thead>
+          <tbody>
+            <tr><td>asciiword</td><td>Running</td><td>english_stem</td><td>{run}</td></tr>
+            <tr><td>blank</td><td> </td><td>—</td><td>—</td></tr>
+            <tr><td>asciiword</td><td>queries</td><td>english_stem</td><td>{queri}</td></tr>
+            <tr><td>blank</td><td> </td><td>—</td><td>—</td></tr>
+            <tr><td>asciiword</td><td>against</td><td>english_stem</td><td>{}</td></tr>
+            <tr><td>blank</td><td> </td><td>—</td><td>—</td></tr>
+            <tr><td>asciiword</td><td>PostgreSQL</td><td>english_stem</td><td>{postgresql}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p><em>against</em> emits an empty lexeme set — it is in the stop list. The lexemes you actually want to customise — accents folded, brand-name synonyms collapsed, custom stop words — are configured by building a new configuration and inserting different dictionaries into the pipeline.</p>
+
+    <div class="example">
+      <p class="caption">An accent-folding configuration</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE EXTENSION IF NOT EXISTS unaccent;
+
+CREATE TEXT SEARCH CONFIGURATION en_unaccent ( COPY = english );
+ALTER TEXT SEARCH CONFIGURATION en_unaccent
+  ALTER MAPPING FOR hword, hword_part, word
+  WITH unaccent, english_stem;
+
+SELECT to_tsvector('en_unaccent', 'café cliché naïve');</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>to_tsvector</th></tr></thead>
+          <tbody>
+            <tr><td><code>'cafe':1 'cliche':2 'naive':3</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <aside class="marginalia">
+      <span class="label">Default</span>
+      The session's default configuration comes from <code>default_text_search_config</code>. Set it per database (<code>ALTER DATABASE app SET default_text_search_config = 'pg_catalog.english'</code>) so application code can omit the first argument to <code>to_tsvector</code> without surprise.
+    </aside>
   </section>
 
   <section>
     <h2><code>@@</code> and ranking with <code>ts_rank</code></h2>
+
+    <p>The match operator is <code>@@</code>. It returns true if a <code>tsvector</code> satisfies a <code>tsquery</code>, and is the predicate you put in the <code>WHERE</code> clause of every full-text search.</p>
+
+    <div class="example">
+      <p class="caption">A basic match</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT id, title
+FROM   articles
+WHERE  to_tsvector('english', title || ' ' || body)
+       @@ websearch_to_tsquery('english', 'postgres "full text"');</code></pre>
+    </div>
+
+    <p>Match returns a boolean. To order results, you need a score — and Postgres gives you two ranking functions that produce one. <code>ts_rank</code> weights matches by frequency: a document that mentions the query terms more often ranks higher. <code>ts_rank_cd</code> ("coverage density") additionally rewards matches whose terms appear close together in the source; if your users expect phrase-like results to rise to the top, it is usually what you want.</p>
+
+    <div class="example">
+      <p class="caption">Top ten by relevance</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">WITH q AS (SELECT websearch_to_tsquery('english', 'replication slot') AS query)
+SELECT a.id, a.title,
+       ts_rank_cd(to_tsvector('english', a.body), q.query) AS rank
+FROM   articles a, q
+WHERE  to_tsvector('english', a.body) @@ q.query
+ORDER  BY rank DESC
+LIMIT  10;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>id</th><th>title</th><th class="num">rank</th></tr></thead>
+          <tbody>
+            <tr><td class="num">418</td><td>Replication slots in depth</td><td class="num">0.187</td></tr>
+            <tr><td class="num">221</td><td>What WAL is for</td><td class="num">0.094</td></tr>
+            <tr><td class="num">503</td><td>Logical decoding in production</td><td class="num">0.061</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>Neither ranker is normalised — the absolute scores are meaningless across queries, only relative ordering within one query is. Both accept a fourth argument with weighting flags (<code>A</code>, <code>B</code>, <code>C</code>, <code>D</code>) so titles can outrank body matches; you assign those weights at vector-construction time with <code>setweight</code>.</p>
+
+    <div class="example">
+      <p class="caption">Title beats body</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT setweight(to_tsvector('english', title), 'A')
+    || setweight(to_tsvector('english', body),  'D') AS doc
+FROM articles
+WHERE id = 418;</code></pre>
+    </div>
   </section>
 
   <section>
     <h2>GIN-indexing a <code>tsvector</code></h2>
+
+    <p>Without an index, <code>@@</code> is a sequential scan: every row, every document, tokenised on the fly. That is fine for a thousand rows and ruinous past a hundred thousand. The right index is <strong>GIN</strong> ("generalized inverted index"), which under the hood stores a posting list per lexeme — a lookup from word to the row IDs that contain it, exactly as a search engine would.</p>
+
+    <p>There are two ways to wire it up. The expression-index form indexes the result of <code>to_tsvector(...)</code> at write time, but every query must use the same expression for the planner to recognise the match:</p>
+
+    <div class="example">
+      <p class="caption">Expression index — query must mirror it exactly</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX articles_body_gin
+  ON articles
+  USING GIN (to_tsvector('english', body));
+
+-- Uses the index:
+SELECT id FROM articles
+WHERE to_tsvector('english', body) @@ websearch_to_tsquery('english', 'wal');
+
+-- Does NOT (different configuration argument shape):
+SELECT id FROM articles
+WHERE to_tsvector(body) @@ websearch_to_tsquery('wal');</code></pre>
+    </div>
+
+    <p>The more durable pattern is a <strong>generated column</strong> of type <code>tsvector</code>, indexed directly. Postgres maintains it on every write, the type is now first-class data, and every query trivially matches the index. From PG 12 onwards this is the recommended shape.</p>
+
+    <div class="example">
+      <p class="caption">Stored generated column, the modern shape</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER TABLE articles
+  ADD COLUMN search tsvector
+  GENERATED ALWAYS AS (
+    setweight(to_tsvector('english', coalesce(title,'')), 'A') ||
+    setweight(to_tsvector('english', coalesce(body, '')), 'D')
+  ) STORED;
+
+CREATE INDEX articles_search_gin ON articles USING GIN (search);
+
+EXPLAIN SELECT id FROM articles
+WHERE  search @@ websearch_to_tsquery('english', 'replication slot');</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>QUERY PLAN</th></tr></thead>
+          <tbody>
+            <tr><td><code>Bitmap Heap Scan on articles  (cost=24.0..189.4 rows=42 width=8)</code></td></tr>
+            <tr><td><code>  Recheck Cond: (search @@ '''replic'' &amp; ''slot'''::tsquery)</code></td></tr>
+            <tr><td><code>  -&gt;  Bitmap Index Scan on articles_search_gin</code></td></tr>
+            <tr><td><code>        Index Cond: (search @@ '''replic'' &amp; ''slot'''::tsquery)</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-label">Note</span>
+      <p>GIN's write cost is real. To soften it, Postgres batches updates into a <em>pending list</em> (<code>fastupdate = on</code>) that is flushed when it grows past <code>gin_pending_list_limit</code> or vacuum runs. On insert-heavy tables this is exactly what you want; on read-heavy tables the pending list adds a recheck step to every query and you may want <code>fastupdate = off</code>.</p>
+    </div>
   </section>
 
   <section>
     <h2>Trigram (<code>pg_trgm</code>) fuzzy match</h2>
+
+    <p><code>tsvector</code> excels at "real words in a real language." It is the wrong tool for typos (<em>postgrres</em>), short codes (<em>SKU-A4F</em>), partial matches (<em>pg_re*</em>), and anything where the stemmer destroys what the user actually typed. For all of those, the <code>pg_trgm</code> extension is the right answer.</p>
+
+    <p>Trigrams break a string into overlapping three-character windows — <em>cat</em> becomes <code>{c, ca, cat, at_}</code> — and similarity is the Jaccard overlap between two such sets. The threshold for the <code>%</code> operator defaults to 0.3 and is tunable with <code>pg_trgm.similarity_threshold</code> (or per-session with <code>SET</code>).</p>
+
+    <div class="example">
+      <p class="caption">Similarity in action</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+SELECT similarity('postgresql', 'postgrres') AS sim,
+       'postgresql' % 'postgrres'            AS matches;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th class="num">sim</th><th>matches</th></tr></thead>
+          <tbody>
+            <tr><td class="num">0.583</td><td>t</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The extension also installs operator classes that let GIN and GiST index trigrams, which makes <code>%</code> and <code>ILIKE '%foo%'</code> both index-accelerated. The same index supports both — Postgres extracts trigrams from the <code>ILIKE</code> pattern at plan time.</p>
+
+    <div class="example">
+      <p class="caption">A trigram GIN index unlocks unanchored <code>ILIKE</code></p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX customers_name_trgm
+  ON customers
+  USING GIN (name gin_trgm_ops);
+
+SELECT id, name FROM customers WHERE name ILIKE '%berg%';   -- now indexable
+SELECT id, name FROM customers WHERE name %  'goldbreg';    -- fuzzy</code></pre>
+    </div>
+
+    <aside class="marginalia">
+      <span class="label">Pick one</span>
+      Use <code>tsvector</code> for prose; use <code>pg_trgm</code> for identifiers, names, and typo-tolerant lookups. You can index both — they live happily side-by-side on the same table.
+    </aside>
   </section>
 
   <section>
     <h2>When to reach for an external engine</h2>
+
+    <p>The in-database engine is enough for almost every "search bar on a CRUD app" use case, and the operational saving of not running a second datastore is real. There is, however, a point at which the right answer is Elasticsearch or OpenSearch — and being honest about where it lies is part of using Postgres well.</p>
+
+    <p>Reach for an external engine when:</p>
+
+    <dl class="kv">
+      <dt>You need per-tenant synonyms or stop words</dt>
+      <dd>Postgres configurations are global to a database. Building thousands of configurations for thousands of tenants is possible and miserable.</dd>
+      <dt>You need learning-to-rank or BM25 out of the box</dt>
+      <dd><code>ts_rank_cd</code> is fixed-form; you can multiply it by a popularity column and call it a day, but anything model-driven belongs in a system designed for it.</dd>
+      <dt>Faceting at scale</dt>
+      <dd>"Top 20 brands among matching documents" is one query in ES, an awkward two-step in Postgres.</dd>
+      <dt>Many languages in one index</dt>
+      <dd>One configuration per language, language-routed at index time, and ES handles it gracefully. In Postgres you end up with per-language columns or per-language tables.</dd>
+      <dt>Index size in the hundreds of gigabytes</dt>
+      <dd>GIN scales further than people expect, but past a certain point the write amplification and vacuum cost on the indexed table become the dominant operational concern.</dd>
+    </dl>
+
+    <p>For everything else — and most apps live in "everything else" — the in-database engine wins on consistency (the index is always in sync with the row), on operational simplicity (one thing to back up), and on transactional integration (search results respect MVCC, including the writer's own uncommitted changes).</p>
   </section>
 
   <div class="cheat-sheet">
