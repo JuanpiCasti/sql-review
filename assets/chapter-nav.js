@@ -23,6 +23,21 @@
   const current = (location.pathname.split('/').pop() || 'index.html').toLowerCase();
 
   document.querySelectorAll('details.chapter-menu').forEach(function (details) {
+    const heading = document.createElement('h2');
+    heading.className = 'chapter-menu-heading';
+    heading.innerHTML = 'Postgres Study <span class="ornament">·</span> <em>Contents</em>';
+    details.appendChild(heading);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'chapter-menu-close';
+    closeBtn.setAttribute('aria-label', 'Close contents');
+    closeBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      details.removeAttribute('open');
+    });
+    details.appendChild(closeBtn);
+
     const list = document.createElement('ul');
     let lastPart = null;
     chapters.forEach(function (entry) {
@@ -45,11 +60,25 @@
       list.appendChild(li);
     });
     details.appendChild(list);
+
+    details.addEventListener('toggle', function () {
+      const anyOpen = !!document.querySelector('details.chapter-menu[open]');
+      document.body.classList.toggle('menu-open', anyOpen);
+    });
   });
 
   document.addEventListener('click', function (e) {
     document.querySelectorAll('details.chapter-menu[open]').forEach(function (d) {
       if (!d.contains(e.target)) d.removeAttribute('open');
+    });
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    document.querySelectorAll('details.chapter-menu[open]').forEach(function (d) {
+      d.removeAttribute('open');
+      const summary = d.querySelector(':scope > summary');
+      if (summary) summary.focus();
     });
   });
 })();
