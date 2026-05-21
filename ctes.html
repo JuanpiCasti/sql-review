@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="ctes.html" aria-current="page">VII · CTEs</a>
+    <details class="chapter-menu"><summary>CTEs</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">07</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter VII · Querying</span>
+      <span class="eyebrow">Querying</span>
       <h1>CTEs <em>&amp; recursion</em></h1>
       <p class="standfirst">The <code>WITH</code> clause turns a query into a script — named, ordered intermediate results that can reference each other, recurse on themselves, and even modify data.</p>
     </div>
@@ -35,10 +34,10 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 7.1</span> Basic WITH</h2>
+    <h2>Basic WITH</h2>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 7.1</span> A query as a script</p>
+      <p class="caption">A query as a script</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">WITH recent_orders AS (
   SELECT * FROM orders
   WHERE placed_at &gt;= now() - interval '30 days'
@@ -66,7 +65,7 @@ LIMIT  20;</code></pre>
   </aside>
 
   <section>
-    <h2><span class="num">§ 7.2</span> MATERIALIZED — the Postgres 12 change</h2>
+    <h2>MATERIALIZED — the Postgres 12 change</h2>
 
     <p>Before Postgres 12, every CTE was an <em>optimisation fence</em>: the planner ran each CTE to completion, stored its rows in a working table, and the outer query read from that table. Predicates could not push into a CTE; statistics from the inner query could not be used outside. This made CTEs slower than equivalent subqueries in most cases.</p>
 
@@ -80,7 +79,7 @@ LIMIT  20;</code></pre>
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 7.2</span> Forcing materialisation as an optimisation barrier</p>
+      <p class="caption">Forcing materialisation as an optimisation barrier</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- Useful when an expensive aggregation is referenced many times,
 -- or when you genuinely want the planner to compute the CTE first.
 WITH stats AS MATERIALIZED (
@@ -101,14 +100,14 @@ WHERE  r.latency &gt; s.p95;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 7.3</span> Recursive CTEs</h2>
+    <h2>Recursive CTEs</h2>
 
     <p>A <code>WITH RECURSIVE</code> clause defines a relation in terms of itself. The body is two <code>SELECT</code>s connected by <code>UNION ALL</code> (or <code>UNION</code> for deduplication): the <em>anchor</em> (non-recursive) and the <em>recursive term</em>, which references the CTE name.</p>
 
     <p>Execution: evaluate the anchor; while the recursive term, applied to the latest batch of rows, produces new rows, keep going. Stop when it produces none.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 7.3</span> Walking a tree of categories</p>
+      <p class="caption">Walking a tree of categories</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">WITH RECURSIVE descendants AS (
     -- anchor: start from the root we care about
     SELECT id, parent_id, name, 0 AS depth, ARRAY[id] AS path
@@ -150,12 +149,12 @@ ORDER  BY path;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 7.4</span> The SEARCH and CYCLE clauses (PG 14+)</h2>
+    <h2>The SEARCH and CYCLE clauses (PG 14+)</h2>
 
     <p>Two standard clauses that recursive CTEs may carry, both added in Postgres 14.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 7.4</span> SEARCH and CYCLE in one query</p>
+      <p class="caption">SEARCH and CYCLE in one query</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">WITH RECURSIVE descendants AS (
     SELECT id, parent_id, name FROM categories WHERE id = 1
   UNION ALL
@@ -169,16 +168,16 @@ FROM   descendants
 ORDER  BY ordering;</code></pre>
     </div>
 
-    <p><code>SEARCH</code> chooses <em>depth-first</em> or <em>breadth-first</em> ordering. <code>CYCLE</code> stops infinite recursion safely. Both are syntactic sugar over the manual bookkeeping in § 7.3, but a much nicer one to read.</p>
+    <p><code>SEARCH</code> chooses <em>depth-first</em> or <em>breadth-first</em> ordering. <code>CYCLE</code> stops infinite recursion safely. Both are syntactic sugar over the manual bookkeeping shown above, but a much nicer one to read.</p>
   </section>
 
   <section>
-    <h2><span class="num">§ 7.5</span> Generating sequences without a table</h2>
+    <h2>Generating sequences without a table</h2>
 
     <p>A favourite use of <code>WITH RECURSIVE</code>: produce a series of rows out of thin air. (For numbers, <code>generate_series</code> is simpler — but the pattern generalises.)</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 7.5</span> Fibonacci, in SQL</p>
+      <p class="caption">Fibonacci, in SQL</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">WITH RECURSIVE fib(i, a, b) AS (
     VALUES (1::bigint, 0::bigint, 1::bigint)
   UNION ALL
@@ -189,12 +188,12 @@ SELECT i, a AS fib FROM fib;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 7.6</span> Data-modifying CTEs</h2>
+    <h2>Data-modifying CTEs</h2>
 
     <p>Postgres lets <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, and <code>MERGE</code> appear inside a <code>WITH</code> clause, provided they use <code>RETURNING</code>. The returned rows are visible to the rest of the statement — useful for "do A, then do B with the keys A produced":</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 7.6</span> Move rows from one table to another, atomically</p>
+      <p class="caption">Move rows from one table to another, atomically</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">WITH moved AS (
   DELETE FROM staging
   WHERE   ready = true
@@ -215,7 +214,7 @@ RETURNING id;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 7.7</span> When not to use a CTE</h2>
+    <h2>When not to use a CTE</h2>
 
     <p>Two situations where a subquery in the <code>FROM</code> clause is the better tool:</p>
 
@@ -253,11 +252,11 @@ RETURNING id;</code></pre>
   <nav class="chapter-nav">
     <a class="prev" href="window-functions.html">
       <span class="label">← Previous</span>
-      <span class="title">VI · Window functions</span>
+      <span class="title">Window functions</span>
     </a>
     <a class="next" href="full-text-search.html">
       <span class="label">Next →</span>
-      <span class="title">VIII · Full-text search</span>
+      <span class="title">Full-text search</span>
     </a>
   </nav>
 
@@ -267,6 +266,7 @@ RETURNING id;</code></pre>
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

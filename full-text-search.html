@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="full-text-search.html" aria-current="page">VIII · Full-text search</a>
+    <details class="chapter-menu"><summary>Full-text search</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">08</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter VIII · Querying</span>
+      <span class="eyebrow">Querying</span>
       <h1>Full-text search, <em>or, <code>LIKE '%foo%'</code> considered harmful</em></h1>
       <p class="standfirst">A search engine inside the database — stemming, ranking, phrase queries, and a GIN index that turns a sequential scan of millions of documents into a few milliseconds.</p>
     </div>
@@ -35,27 +34,27 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 8.1</span> <code>tsvector</code> and <code>tsquery</code></h2>
+    <h2><code>tsvector</code> and <code>tsquery</code></h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 8.2</span> Dictionaries, stemmers, configurations</h2>
+    <h2>Dictionaries, stemmers, configurations</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 8.3</span> <code>@@</code> and ranking with <code>ts_rank</code></h2>
+    <h2><code>@@</code> and ranking with <code>ts_rank</code></h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 8.4</span> GIN-indexing a <code>tsvector</code></h2>
+    <h2>GIN-indexing a <code>tsvector</code></h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 8.5</span> Trigram (<code>pg_trgm</code>) fuzzy match</h2>
+    <h2>Trigram (<code>pg_trgm</code>) fuzzy match</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 8.6</span> When to reach for an external engine</h2>
+    <h2>When to reach for an external engine</h2>
   </section>
 
   <div class="cheat-sheet">
@@ -87,11 +86,11 @@
   <nav class="chapter-nav">
     <a class="prev" href="ctes.html">
       <span class="label">← Previous</span>
-      <span class="title">VII · CTEs &amp; recursion</span>
+      <span class="title">CTEs &amp; recursion</span>
     </a>
     <a class="next" href="jsonb.html">
       <span class="label">Next →</span>
-      <span class="title">IX · JSONB</span>
+      <span class="title">JSONB</span>
     </a>
   </nav>
 
@@ -101,6 +100,7 @@
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

@@ -14,7 +14,7 @@
 <header class="site-header">
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
-    <a href="index.html" aria-current="page">Contents</a>
+    <details class="chapter-menu"><summary>Chapters</summary></details>
     <a href="data-types-and-null.html">Begin reading →</a>
   </nav>
 </header>
@@ -22,7 +22,6 @@
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">§</div>
     <div class="title-block">
       <span class="eyebrow">A personal review · nineteen chapters</span>
       <h1>Postgres, <em>from the ground up</em></h1>
@@ -46,12 +45,10 @@
 
     <div class="toc-grid">
       <a class="toc-card" href="data-types-and-null.html">
-        <div class="ch">Ch. 02</div>
         <h3><em>Data types &amp; NULL</em></h3>
         <p><code>timestamptz</code> vs <code>timestamp</code>, <code>numeric</code> vs <code>float</code>, arrays and ranges, and the three-valued logic of <code>NULL</code>.</p>
       </a>
       <a class="toc-card" href="schema-and-constraints.html">
-        <div class="ch">Ch. 03</div>
         <h3><em>Schema design &amp; constraints</em></h3>
         <p>Primary and foreign keys, <code>CHECK</code> and <code>UNIQUE</code>, exclusion constraints, generated columns, and the safe shape of <code>ALTER TABLE</code>.</p>
       </a>
@@ -63,32 +60,26 @@
 
     <div class="toc-grid">
       <a class="toc-card" href="joins.html">
-        <div class="ch">Ch. 04</div>
         <h3><em>Joins</em></h3>
         <p>Every join type with diagrams. <code>LATERAL</code>, semi- and anti-joins, the <code>NOT IN</code> NULL trap, when <code>USING</code> beats <code>ON</code>.</p>
       </a>
       <a class="toc-card" href="aggregates-group-by.html">
-        <div class="ch">Ch. 05</div>
         <h3><em>Aggregates &amp; GROUP BY</em></h3>
         <p><code>HAVING</code> vs <code>WHERE</code>, the <code>FILTER</code> clause, <code>GROUPING SETS</code> / <code>ROLLUP</code> / <code>CUBE</code>, ordered-set aggregates.</p>
       </a>
       <a class="toc-card" href="window-functions.html">
-        <div class="ch">Ch. 06</div>
         <h3><em>Window functions</em></h3>
         <p><code>RANK</code>, <code>DENSE_RANK</code>, <code>ROW_NUMBER</code>, <code>LAG</code> / <code>LEAD</code>, the frame clause, and the <code>LAST_VALUE</code> trap.</p>
       </a>
       <a class="toc-card" href="ctes.html">
-        <div class="ch">Ch. 07</div>
         <h3><em>CTEs &amp; recursion</em></h3>
         <p><code>WITH</code>, the <code>MATERIALIZED</code> keyword, recursive CTEs for tree walks, data-modifying CTEs.</p>
       </a>
       <a class="toc-card" href="full-text-search.html">
-        <div class="ch">Ch. 08</div>
         <h3><em>Full-text search</em></h3>
         <p><code>tsvector</code> and <code>tsquery</code>, the <code>@@</code> operator, <code>ts_rank</code>, GIN-indexed search, and trigram fuzzy match.</p>
       </a>
       <a class="toc-card" href="jsonb.html">
-        <div class="ch">Ch. 09</div>
         <h3><em>JSONB</em></h3>
         <p>Operators, JSONPath, containment, GIN indexing strategies, and when to stop using JSONB.</p>
       </a>
@@ -100,22 +91,18 @@
 
     <div class="toc-grid">
       <a class="toc-card" href="transactions.html">
-        <div class="ch">Ch. 10</div>
         <h3><em>Transactions</em></h3>
         <p>BEGIN, COMMIT, ROLLBACK, savepoints, two-phase commit, and why DDL inside a transaction is a Postgres superpower.</p>
       </a>
       <a class="toc-card" href="isolation-levels.html">
-        <div class="ch">Ch. 11</div>
         <h3><em>Isolation levels</em></h3>
         <p>What Read Committed, Repeatable Read, and Serializable actually do — and the four anomalies they protect you from.</p>
       </a>
       <a class="toc-card" href="mvcc.html">
-        <div class="ch">Ch. 12</div>
         <h3><em>MVCC &amp; VACUUM</em></h3>
         <p>Snapshots, xmin/xmax, dead tuples, HOT updates, autovacuum, and the long-running transaction that ate your disk.</p>
       </a>
       <a class="toc-card" href="locking-deadlocks.html">
-        <div class="ch">Ch. 13</div>
         <h3><em>Locking &amp; deadlocks</em></h3>
         <p>Eight table-lock modes, four row-lock modes, the deadlock detector, advisory locks, and <code>FOR UPDATE SKIP LOCKED</code>.</p>
       </a>
@@ -127,17 +114,14 @@
 
     <div class="toc-grid">
       <a class="toc-card" href="indexes.html">
-        <div class="ch">Ch. 14</div>
         <h3><em>Indexes</em></h3>
         <p>B-tree, Hash, GIN, GiST, BRIN. Partial, expression, and covering indexes. Index-only scans and the visibility map.</p>
       </a>
       <a class="toc-card" href="partitioning.html">
-        <div class="ch">Ch. 15</div>
         <h3><em>Partitioning</em></h3>
         <p><code>RANGE</code>, <code>LIST</code>, <code>HASH</code>; partition pruning; attaching and detaching without long locks; the global-index pitfall.</p>
       </a>
       <a class="toc-card" href="explain-planner.html">
-        <div class="ch">Ch. 16</div>
         <h3><em>EXPLAIN &amp; the planner</em></h3>
         <p>Reading plans, <code>ANALYZE</code> vs <code>BUFFERS</code>, join strategies, the cost model, and when the planner is wrong.</p>
       </a>
@@ -149,17 +133,14 @@
 
     <div class="toc-grid">
       <a class="toc-card" href="functions-and-triggers.html">
-        <div class="ch">Ch. 17</div>
         <h3><em>Functions &amp; triggers</em></h3>
         <p><code>LANGUAGE sql</code> vs <code>plpgsql</code>, volatility, procedures with embedded <code>COMMIT</code>, triggers, and the <code>SECURITY DEFINER</code> trap.</p>
       </a>
       <a class="toc-card" href="configuration-and-tuning.html">
-        <div class="ch">Ch. 18</div>
         <h3><em>Configuration &amp; tuning</em></h3>
         <p><code>shared_buffers</code>, <code>work_mem</code>, WAL knobs, autovacuum tuning, connection pooling, and <code>pg_stat_statements</code>.</p>
       </a>
       <a class="toc-card" href="replication-and-wal.html">
-        <div class="ch">Ch. 19</div>
         <h3><em>Replication &amp; WAL</em></h3>
         <p>Streaming and logical replication, replication slots, synchronous commit, failover, and point-in-time recovery.</p>
       </a>
@@ -171,7 +152,7 @@
 
     <div class="callout note">
       <span class="callout-label">If you have an interview tomorrow</span>
-      <p>Read chapters <a href="joins.html">04</a>, <a href="window-functions.html">06</a>, <a href="transactions.html">10</a>, <a href="isolation-levels.html">11</a>, and <a href="indexes.html">14</a>. Skim the cheat sheets first; come back for the worked examples.</p>
+      <p>Read <a href="joins.html">joins</a>, <a href="window-functions.html">window functions</a>, <a href="transactions.html">transactions</a>, <a href="isolation-levels.html">isolation levels</a>, and <a href="indexes.html">indexes</a>. Skim the cheat sheets first; come back for the worked examples.</p>
     </div>
 
     <div class="callout">
@@ -191,6 +172,7 @@
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="partitioning.html" aria-current="page">XV · Partitioning</a>
+    <details class="chapter-menu"><summary>Partitioning</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">15</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter XV · Storage</span>
+      <span class="eyebrow">Storage</span>
       <h1>Partitioning, <em>or, when one table isn't enough</em></h1>
       <p class="standfirst">A single logical table backed by many physical ones. The planner prunes the partitions it doesn't need; old data drops in a single <code>ALTER TABLE</code>; the application still writes one <code>INSERT</code>.</p>
     </div>
@@ -35,27 +34,27 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 15.1</span> Declarative partitioning vs inheritance</h2>
+    <h2>Declarative partitioning vs inheritance</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 15.2</span> <code>RANGE</code>, <code>LIST</code>, <code>HASH</code></h2>
+    <h2><code>RANGE</code>, <code>LIST</code>, <code>HASH</code></h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 15.3</span> Partition pruning and the planner</h2>
+    <h2>Partition pruning and the planner</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 15.4</span> Attaching and detaching without long locks</h2>
+    <h2>Attaching and detaching without long locks</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 15.5</span> Default partitions and partition-wise joins</h2>
+    <h2>Default partitions and partition-wise joins</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 15.6</span> Pitfalls — no global indexes, <code>UNIQUE</code> must include the partition key</h2>
+    <h2>Pitfalls — no global indexes, <code>UNIQUE</code> must include the partition key</h2>
   </section>
 
   <div class="cheat-sheet">
@@ -86,11 +85,11 @@
   <nav class="chapter-nav">
     <a class="prev" href="indexes.html">
       <span class="label">← Previous</span>
-      <span class="title">XIV · Indexes</span>
+      <span class="title">Indexes</span>
     </a>
     <a class="next" href="explain-planner.html">
       <span class="label">Next →</span>
-      <span class="title">XVI · EXPLAIN &amp; the planner</span>
+      <span class="title">EXPLAIN &amp; the planner</span>
     </a>
   </nav>
 
@@ -100,6 +99,7 @@
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

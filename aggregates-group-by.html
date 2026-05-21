@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="aggregates-group-by.html" aria-current="page">V · Aggregates</a>
+    <details class="chapter-menu"><summary>Aggregates</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">05</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter V · Querying</span>
+      <span class="eyebrow">Querying</span>
       <h1>Aggregates &amp; <em>GROUP BY</em></h1>
       <p class="standfirst">Collapsing many rows into one — and then collapsing many groups into many summary rows. The aggregate clause, the <code>FILTER</code> qualifier, and the cube of grouping sets.</p>
     </div>
@@ -40,12 +39,12 @@
   </aside>
 
   <section>
-    <h2><span class="num">§ 5.1</span> The shape of a grouped query</h2>
+    <h2>The shape of a grouped query</h2>
 
     <p>The canonical form:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 5.1</span> Revenue per region</p>
+      <p class="caption">Revenue per region</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region,
        count(*)             AS orders,
        sum(revenue)         AS revenue,
@@ -81,7 +80,7 @@ ORDER  BY revenue DESC;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 5.2</span> NULL in aggregates and groups</h2>
+    <h2>NULL in aggregates and groups</h2>
 
     <p>Two rules to memorise:</p>
 
@@ -91,7 +90,7 @@ ORDER  BY revenue DESC;</code></pre>
     </ul>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 5.2</span> Counting rows vs. counting values</p>
+      <p class="caption">Counting rows vs. counting values</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT count(*)         AS rows,        -- 5
        count(email)     AS with_email,  -- 3 (nulls ignored)
        count(DISTINCT email) AS unique_emails
@@ -100,7 +99,7 @@ FROM   users;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 5.3</span> WHERE vs HAVING</h2>
+    <h2>WHERE vs HAVING</h2>
 
     <p>The two filters look similar but apply at different stages.</p>
 
@@ -110,7 +109,7 @@ FROM   users;</code></pre>
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 5.3</span> Regions with more than 300 orders, excluding test data</p>
+      <p class="caption">Regions with more than 300 orders, excluding test data</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region, count(*) AS orders
 FROM   sales
 WHERE  sold_at &gt;= date '2026-01-01'   -- row filter, cheap
@@ -122,12 +121,12 @@ HAVING count(*) &gt; 300;                -- group filter, after the count</code>
   </section>
 
   <section>
-    <h2><span class="num">§ 5.4</span> The FILTER clause</h2>
+    <h2>The FILTER clause</h2>
 
     <p>Conditional aggregation, properly. <code>FILTER (WHERE …)</code> attached to an aggregate restricts <em>that aggregate's</em> input without restricting the surrounding query. It replaces the older <code>CASE WHEN x THEN 1 END</code> idiom and is strictly nicer:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 5.4</span> Multiple counters in one pass</p>
+      <p class="caption">Multiple counters in one pass</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region,
        count(*)                                              AS total,
        count(*) FILTER (WHERE revenue &gt; 1000)                AS high_value,
@@ -142,12 +141,12 @@ GROUP  BY region;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 5.5</span> DISTINCT inside an aggregate</h2>
+    <h2>DISTINCT inside an aggregate</h2>
 
     <p>Aggregates accept <code>DISTINCT</code> to deduplicate before they reduce:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 5.5</span> Distinct buyers per region</p>
+      <p class="caption">Distinct buyers per region</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region,
        count(DISTINCT customer_id) AS unique_customers,
        array_agg(DISTINCT product ORDER BY product) AS products
@@ -159,7 +158,7 @@ GROUP  BY region;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 5.6</span> Useful aggregates beyond the basics</h2>
+    <h2>Useful aggregates beyond the basics</h2>
 
     <dl class="kv">
       <dt>array_agg(x)</dt>      <dd>Collect values into an array. Pairs with <code>ORDER BY</code> inside the call.</dd>
@@ -173,12 +172,12 @@ GROUP  BY region;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 5.7</span> Ordered-set aggregates</h2>
+    <h2>Ordered-set aggregates</h2>
 
     <p>A few aggregates need the input <em>sorted</em> to make sense — percentiles, modes. They use special syntax: <code>WITHIN GROUP (ORDER BY …)</code>.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 5.6</span> p50, p95, p99 latency per endpoint</p>
+      <p class="caption">p50, p95, p99 latency per endpoint</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT endpoint,
        percentile_cont(0.50) WITHIN GROUP (ORDER BY latency_ms) AS p50,
        percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95,
@@ -192,12 +191,12 @@ GROUP  BY endpoint;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 5.8</span> GROUPING SETS, ROLLUP, CUBE</h2>
+    <h2>GROUPING SETS, ROLLUP, CUBE</h2>
 
     <p>Sometimes you want subtotals — revenue by (region, product), by region alone, by product alone, and overall, all in one result. The naïve approach is four queries joined by <code>UNION ALL</code>. <code>GROUPING SETS</code> does it in one pass:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 5.7</span> A pivot summary in one query</p>
+      <p class="caption">A pivot summary in one query</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region,
        product,
        sum(revenue) AS revenue
@@ -228,7 +227,7 @@ GROUP  BY GROUPING SETS (
     <p>Subtotal rows have <code>NULL</code> in the columns they aggregated over. Genuine <code>NULL</code> values look the same — so use the <code>GROUPING()</code> function to disambiguate:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 5.8</span> The GROUPING() bitmask</p>
+      <p class="caption">The GROUPING() bitmask</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT GROUPING(region, product) AS g,        -- 0..3 bitmask
        coalesce(region, 'ALL REGIONS')   AS region,
        coalesce(product, 'ALL PRODUCTS') AS product,
@@ -248,12 +247,12 @@ GROUP  BY GROUPING SETS ((region, product), (region), ());</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 5.9</span> GROUP BY ALL (Postgres 16+)</h2>
+    <h2>GROUP BY ALL (Postgres 16+)</h2>
 
     <p>A small but welcome addition: <code>GROUP BY ALL</code> tells Postgres to group by every non-aggregate column in the <code>SELECT</code> list. It saves repetition in big reporting queries:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 5.9</span> Less typing, same result</p>
+      <p class="caption">Less typing, same result</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region, product, date_trunc('month', sold_at) AS month,
        sum(revenue), count(*)
 FROM   sales
@@ -291,11 +290,11 @@ GROUP  BY ALL;
   <nav class="chapter-nav">
     <a class="prev" href="joins.html">
       <span class="label">← Previous</span>
-      <span class="title">IV · Joins</span>
+      <span class="title">Joins</span>
     </a>
     <a class="next" href="window-functions.html">
       <span class="label">Next →</span>
-      <span class="title">VI · Window functions</span>
+      <span class="title">Window functions</span>
     </a>
   </nav>
 
@@ -305,6 +304,7 @@ GROUP  BY ALL;
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

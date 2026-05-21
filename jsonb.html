@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="jsonb.html" aria-current="page">IX · JSONB</a>
+    <details class="chapter-menu"><summary>JSONB</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">09</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter IX · Querying</span>
+      <span class="eyebrow">Querying</span>
       <h1>JSONB, <em>or, schemaless inside the schema</em></h1>
       <p class="standfirst">A binary, indexable, query-able document type that lets you escape the schema when you need to — without leaving the database.</p>
     </div>
@@ -40,7 +39,7 @@
   </aside>
 
   <section>
-    <h2><span class="num">§ 9.1</span> The operators</h2>
+    <h2>The operators</h2>
 
     <p>Two families: <em>extraction</em> (get a piece out) and <em>predicate</em> (ask a yes/no question, useful in <code>WHERE</code>).</p>
 
@@ -65,7 +64,7 @@
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 9.1</span> Extraction vs. predicates</p>
+      <p class="caption">Extraction vs. predicates</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- payload looks like: {"type": "click", "user": {"id": 7, "tier": "pro"}, "tags": ["a","b"]}
 
 SELECT payload -&gt; 'user'              FROM events;  -- jsonb: {"id":7,"tier":"pro"}
@@ -79,7 +78,7 @@ SELECT * FROM events WHERE payload -&gt; 'tags' ? 'a';          -- array contain
   </section>
 
   <section>
-    <h2><span class="num">§ 9.2</span> Indexing — two opclasses</h2>
+    <h2>Indexing — two opclasses</h2>
 
     <p>JSONB is indexable with GIN. There are two operator classes to choose from:</p>
 
@@ -89,7 +88,7 @@ SELECT * FROM events WHERE payload -&gt; 'tags' ? 'a';          -- array contain
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 9.2</span> Both indexes, one column</p>
+      <p class="caption">Both indexes, one column</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX events_payload_gin       ON events USING gin (payload);
 -- supports @&gt;, ?, ?|, ?&amp;, @?, @@
 
@@ -103,7 +102,7 @@ CREATE INDEX events_payload_path_gin  ON events USING gin (payload jsonb_path_op
     <p>For queries that hit a <em>specific</em> path repeatedly, a plain B-tree on an expression beats either GIN:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 9.3</span> Expression index for hot paths</p>
+      <p class="caption">Expression index for hot paths</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON events ((payload -&gt;&gt; 'type'));
 SELECT * FROM events WHERE payload -&gt;&gt; 'type' = 'click';
 -- IndexScan on the B-tree — faster than GIN for this pattern.</code></pre>
@@ -111,7 +110,7 @@ SELECT * FROM events WHERE payload -&gt;&gt; 'type' = 'click';
   </section>
 
   <section>
-    <h2><span class="num">§ 9.3</span> JSONPath</h2>
+    <h2>JSONPath</h2>
 
     <p>JSONPath (SQL/JSON, Postgres 12+) is a small query language for navigating into a document with filters, comparisons, and wildcards. The two operators that use it:</p>
 
@@ -121,7 +120,7 @@ SELECT * FROM events WHERE payload -&gt;&gt; 'type' = 'click';
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 9.4</span> Path queries</p>
+      <p class="caption">Path queries</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- payload: {"items": [{"sku":"A","qty":1},{"sku":"B","qty":7}]}
 
 -- "does any item have qty &gt; 5?"
@@ -141,7 +140,7 @@ FROM   events;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 9.4</span> Construction and modification</h2>
+    <h2>Construction and modification</h2>
 
     <dl class="kv">
       <dt>jsonb_build_object(k,v,...)</dt>  <dd>Build an object from alternating key/value arguments.</dd>
@@ -155,7 +154,7 @@ FROM   events;</code></pre>
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 9.5</span> Updating a JSONB field in place</p>
+      <p class="caption">Updating a JSONB field in place</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">UPDATE users
 SET    prefs = jsonb_set(prefs, '{theme}', '"dark"', create_missing =&gt; true)
 WHERE  id = 7;
@@ -173,7 +172,7 @@ WHERE  id = 7;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 9.5</span> Unnesting JSONB into rows</h2>
+    <h2>Unnesting JSONB into rows</h2>
 
     <p>Three functions convert document structure into ordinary rows you can join, group, and filter:</p>
 
@@ -184,7 +183,7 @@ WHERE  id = 7;</code></pre>
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 9.6</span> Expanding an array of items</p>
+      <p class="caption">Expanding an array of items</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- payload: [{"sku":"A","qty":1},{"sku":"B","qty":7}]
 
 SELECT e.id, item.sku, item.qty
@@ -193,11 +192,11 @@ FROM   events e,
 WHERE  item.qty &gt; 5;</code></pre>
     </div>
 
-    <p>The comma in the <code>FROM</code> is an implicit <code>LATERAL CROSS JOIN</code> — the right side runs once per outer row, naturally. (See <a href="joins.html">Ch. IV</a>.)</p>
+    <p>The comma in the <code>FROM</code> is an implicit <code>LATERAL CROSS JOIN</code> — the right side runs once per outer row, naturally. (See the <a href="joins.html">joins chapter</a>.)</p>
   </section>
 
   <section>
-    <h2><span class="num">§ 9.6</span> When <em>not</em> to use JSONB</h2>
+    <h2>When <em>not</em> to use JSONB</h2>
 
     <p>JSONB is wonderful — and over-used. Move a field <em>out</em> of JSONB into a real column when:</p>
 
@@ -215,10 +214,10 @@ WHERE  item.qty &gt; 5;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 9.7</span> A real-world recipe</h2>
+    <h2>A real-world recipe</h2>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 9.7</span> Event store with the right indexes</p>
+      <p class="caption">Event store with the right indexes</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE events (
   id          bigserial PRIMARY KEY,
   type        text      NOT NULL,        -- hot, promoted
@@ -273,11 +272,11 @@ CREATE INDEX ON events ((payload -&gt;&gt; 'campaign_id'));</code></pre>
   <nav class="chapter-nav">
     <a class="prev" href="full-text-search.html">
       <span class="label">← Previous</span>
-      <span class="title">VIII · Full-text search</span>
+      <span class="title">Full-text search</span>
     </a>
     <a class="next" href="transactions.html">
       <span class="label">Next →</span>
-      <span class="title">X · Transactions</span>
+      <span class="title">Transactions</span>
     </a>
   </nav>
 
@@ -287,6 +286,7 @@ CREATE INDEX ON events ((payload -&gt;&gt; 'campaign_id'));</code></pre>
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="joins.html" aria-current="page">IV · Joins</a>
+    <details class="chapter-menu"><summary>Joins</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">04</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter IV · Querying</span>
+      <span class="eyebrow">Querying</span>
       <h1>Joins, <em>or, putting tables together</em></h1>
       <p class="standfirst">Every way Postgres lets you combine two relations: inner, the four outer flavours, cross, lateral, and the two implicit kinds — semi and anti — you write with <code>EXISTS</code>.</p>
     </div>
@@ -42,7 +41,7 @@
   </aside>
 
   <section>
-    <h2><span class="num">§ 4.1</span> The five named joins, at a glance</h2>
+    <h2>The five named joins, at a glance</h2>
 
     <div class="venn-grid">
       <div class="venn-card">
@@ -91,10 +90,10 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 4.2</span> INNER JOIN</h2>
+    <h2>INNER JOIN</h2>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 4.1</span> Books with their author</p>
+      <p class="caption">Books with their author</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT b.title, a.name AS author
 FROM   books b
 JOIN   authors a ON a.id = b.author_id
@@ -116,11 +115,11 @@ ORDER  BY b.id;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 4.3</span> LEFT JOIN (and its mirror)</h2>
+    <h2>LEFT JOIN (and its mirror)</h2>
 
     <div class="example split">
       <div>
-        <p class="caption"><span class="num">Ex. 4.2</span> Every author, with their books if any</p>
+        <p class="caption">Every author, with their books if any</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT a.name, b.title
 FROM   authors a
 LEFT   JOIN books b
@@ -147,11 +146,11 @@ ORDER  BY a.name, b.id;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 4.4</span> FULL OUTER JOIN</h2>
+    <h2>FULL OUTER JOIN</h2>
 
     <div class="example split">
       <div>
-        <p class="caption"><span class="num">Ex. 4.3</span> Everything from both sides</p>
+        <p class="caption">Everything from both sides</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT a.name, b.title
 FROM   authors a
 FULL   OUTER JOIN books b
@@ -176,12 +175,12 @@ FULL   OUTER JOIN books b
   </section>
 
   <section>
-    <h2><span class="num">§ 4.5</span> CROSS JOIN</h2>
+    <h2>CROSS JOIN</h2>
 
     <p>Every row of the left side paired with every row of the right side, with no condition. Three authors × four books = twelve rows. Usually a mistake — but occasionally exactly what you want:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 4.4</span> Generating a date×product matrix</p>
+      <p class="caption">Generating a date×product matrix</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT d::date, p.id
 FROM   generate_series(date '2026-01-01', date '2026-01-07', interval '1 day') d
 CROSS  JOIN products p
@@ -194,7 +193,7 @@ ORDER  BY d, p.id;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 4.6</span> ON vs USING vs NATURAL</h2>
+    <h2>ON vs USING vs NATURAL</h2>
 
     <p>Three ways to write the join condition:</p>
 
@@ -205,21 +204,21 @@ ORDER  BY d, p.id;</code></pre>
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 4.5</span> USING tidies up self-explanatory keys</p>
+      <p class="caption">USING tidies up self-explanatory keys</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT * FROM orders JOIN order_items USING (order_id);
 -- one order_id column in the output, plus everything else from both tables</code></pre>
     </div>
   </section>
 
   <section>
-    <h2><span class="num">§ 4.7</span> LATERAL — the correlated subquery in FROM</h2>
+    <h2>LATERAL — the correlated subquery in FROM</h2>
 
     <p>A <code>LATERAL</code> join lets a subquery on the right side reference columns from the left side. Without <code>LATERAL</code>, the items in a <code>FROM</code> clause are independent of each other; with it, the right side is evaluated <em>once per row</em> of the left.</p>
 
     <p>The canonical use is <strong>top-N per group</strong>:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 4.6</span> Two most recent orders per customer</p>
+      <p class="caption">Two most recent orders per customer</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT c.id, c.name, o.placed_at, o.total
 FROM   customers c
 JOIN   LATERAL (
@@ -241,17 +240,17 @@ ORDER  BY c.id;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 4.8</span> Semi-joins and anti-joins</h2>
+    <h2>Semi-joins and anti-joins</h2>
 
     <p>A <strong>semi-join</strong> returns rows of the left side that have <em>at least one</em> match on the right — but without multiplying rows the way an inner join would. Postgres recognises three idioms for this, all producing the same plan:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 4.7</span> Authors who have written at least one book</p>
+      <p class="caption">Authors who have written at least one book</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- semi-join, the canonical spelling
 SELECT * FROM authors a
 WHERE  EXISTS (SELECT 1 FROM books b WHERE b.author_id = a.id);
 
--- equivalent, but easier to get wrong (see § 4.9)
+-- equivalent, but easier to get wrong (see the NOT IN section)
 SELECT * FROM authors WHERE id IN (SELECT author_id FROM books);
 
 -- a INNER JOIN with DISTINCT can also express this, but the planner
@@ -261,7 +260,7 @@ SELECT * FROM authors WHERE id IN (SELECT author_id FROM books);
     <p>An <strong>anti-join</strong> is the negation: rows of the left with <em>no</em> match on the right. <code>NOT EXISTS</code> is the safe spelling:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 4.8</span> Authors with no book</p>
+      <p class="caption">Authors with no book</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT * FROM authors a
 WHERE  NOT EXISTS (
   SELECT 1 FROM books b WHERE b.author_id = a.id
@@ -276,12 +275,12 @@ WHERE  b.id IS NULL;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 4.9</span> The NOT IN NULL trap</h2>
+    <h2>The NOT IN NULL trap</h2>
 
     <p>This is the single nastiest bug in SQL semantics. If the subquery in <code>NOT IN</code> returns even one <code>NULL</code>, the entire outer query returns <em>no rows</em>:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 4.9</span> The trap, and the fix</p>
+      <p class="caption">The trap, and the fix</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- books table contains one row with author_id = NULL
 
 -- "authors who have no book" — looks right, returns ZERO rows
@@ -302,12 +301,12 @@ WHERE  NOT EXISTS (SELECT 1 FROM books b WHERE b.author_id = a.id);</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 4.10</span> Self-joins</h2>
+    <h2>Self-joins</h2>
 
     <p>A table joined to itself — typically with two aliases. Useful for hierarchies (parent/child), pairwise comparisons, and gap-filling.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 4.10</span> Employee → manager lookup</p>
+      <p class="caption">Employee → manager lookup</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT e.name AS employee, m.name AS manager
 FROM   employees e
 LEFT   JOIN employees m ON m.id = e.manager_id;</code></pre>
@@ -317,7 +316,7 @@ LEFT   JOIN employees m ON m.id = e.manager_id;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 4.11</span> Join order, theta-joins, and the planner</h2>
+    <h2>Join order, theta-joins, and the planner</h2>
 
     <p>The order you write join clauses in is almost never the order Postgres executes them. The planner enumerates join orders and picks the cheapest by its cost model — capped by <code>join_collapse_limit</code> (default 8). Beyond that limit it falls back to the order you wrote.</p>
 
@@ -360,11 +359,11 @@ LEFT   JOIN employees m ON m.id = e.manager_id;</code></pre>
   <nav class="chapter-nav">
     <a class="prev" href="schema-and-constraints.html">
       <span class="label">← Previous</span>
-      <span class="title">III · Schema design &amp; constraints</span>
+      <span class="title">Schema design &amp; constraints</span>
     </a>
     <a class="next" href="aggregates-group-by.html">
       <span class="label">Next →</span>
-      <span class="title">V · Aggregates &amp; GROUP BY</span>
+      <span class="title">Aggregates &amp; GROUP BY</span>
     </a>
   </nav>
 
@@ -374,6 +373,7 @@ LEFT   JOIN employees m ON m.id = e.manager_id;</code></pre>
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

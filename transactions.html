@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="transactions.html" aria-current="page">X · Transactions</a>
+    <details class="chapter-menu"><summary>Transactions</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">10</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter X · Concurrency</span>
+      <span class="eyebrow">Concurrency</span>
       <h1>Transactions, <em>or, all-or-nothing</em></h1>
       <p class="standfirst">A unit of work that either takes effect as a whole or leaves no trace at all. The smallest, most important abstraction Postgres gives you.</p>
     </div>
@@ -42,12 +41,12 @@
   </aside>
 
   <section>
-    <h2><span class="num">§ 10.1</span> The four verbs</h2>
+    <h2>The four verbs</h2>
 
     <p>Outside of a transaction block, each statement is implicitly wrapped in its own transaction and committed the moment it returns. Inside a block, statements accumulate and only become visible to other sessions at <code>COMMIT</code>.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 10.1</span> A two-statement transfer</p>
+      <p class="caption">A two-statement transfer</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
 UPDATE accounts SET balance = balance - 100 WHERE id = 1;
 UPDATE accounts SET balance = balance + 100 WHERE id = 2;
@@ -59,7 +58,7 @@ COMMIT;</code></pre>
     <p>To discard everything since the <code>BEGIN</code>, use <code>ROLLBACK</code>:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 10.2</span> Discarding work in flight</p>
+      <p class="caption">Discarding work in flight</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
 DELETE FROM orders WHERE created_at &lt; now() - interval '5 years';
 -- on reflection, that was too aggressive
@@ -75,12 +74,12 @@ ROLLBACK;</code></pre>
   </aside>
 
   <section>
-    <h2><span class="num">§ 10.2</span> Aborted transactions</h2>
+    <h2>Aborted transactions</h2>
 
     <p>This is the gotcha that catches every newcomer. The instant <em>any</em> statement inside a transaction raises an error, Postgres marks the entire transaction as aborted. Every subsequent statement until you issue <code>ROLLBACK</code> (or <code>ROLLBACK TO</code> a savepoint) is rejected with the same terse message:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 10.3</span> The aborted-transaction error</p>
+      <p class="caption">The aborted-transaction error</p>
 <pre class="language-sql" data-lang="psql"><code class="language-sql">BEGIN;
 SELECT * FROM oops;
 -- ERROR:  relation "oops" does not exist
@@ -99,12 +98,12 @@ ROLLBACK;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 10.3</span> Savepoints — nested rollback</h2>
+    <h2>Savepoints — nested rollback</h2>
 
     <p>A <strong>savepoint</strong> is a named marker inside an open transaction. You can <code>ROLLBACK TO</code> it to discard work done after the marker without aborting the whole transaction, or <code>RELEASE</code> it to throw the marker away while keeping the work.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 10.4</span> Recovering from a failed insert</p>
+      <p class="caption">Recovering from a failed insert</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
 INSERT INTO users (email) VALUES ('ada@example.com');
 
@@ -129,7 +128,7 @@ COMMIT;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 10.4</span> Transaction characteristics</h2>
+    <h2>Transaction characteristics</h2>
 
     <p>You can attach modifiers to a transaction at its start. The two you will actually use:</p>
 
@@ -143,7 +142,7 @@ COMMIT;</code></pre>
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 10.5</span> Setting characteristics</p>
+      <p class="caption">Setting characteristics</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY DEFERRABLE;
 SELECT count(*) FROM ledger WHERE posted_on = current_date;
 COMMIT;
@@ -160,12 +159,12 @@ COMMIT;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 10.5</span> Two-phase commit</h2>
+    <h2>Two-phase commit</h2>
 
     <p>For distributed transactions across multiple databases, Postgres implements the XA-style <strong>two-phase commit</strong> protocol. The transaction is first <em>prepared</em> — durably persisted and ready to commit — but not yet visible. A coordinator then commits or rolls back each participant.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 10.6</span> Preparing and committing</p>
+      <p class="caption">Preparing and committing</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
 UPDATE inventory SET qty = qty - 1 WHERE sku = 'A';
 PREPARE TRANSACTION 'order-77-leg-1';
@@ -184,7 +183,7 @@ ROLLBACK PREPARED 'order-77-leg-1';</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 10.6</span> What lives outside a transaction</h2>
+    <h2>What lives outside a transaction</h2>
 
     <p>A short, useful list of things you cannot do inside <code>BEGIN ... COMMIT</code>:</p>
 
@@ -204,14 +203,14 @@ ROLLBACK PREPARED 'order-77-leg-1';</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 10.7</span> Idle in transaction</h2>
+    <h2>Idle in transaction</h2>
 
     <p>A connection that has issued <code>BEGIN</code> but is doing nothing — waiting on application logic, a network round-trip, a user — is in the <strong>idle in transaction</strong> state. It still holds every lock it has taken and still pins the snapshot it acquired, blocking <code>VACUUM</code> from reclaiming dead tuples newer than its xmin.</p>
 
     <p>You can see them in <code>pg_stat_activity</code>:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 10.7</span> Finding long-running idle transactions</p>
+      <p class="caption">Finding long-running idle transactions</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT pid,
        usename,
        state,
@@ -268,11 +267,11 @@ SELECT pg_reload_conf();</code></pre>
   <nav class="chapter-nav">
     <a class="prev" href="jsonb.html">
       <span class="label">← Previous</span>
-      <span class="title">IX · JSONB</span>
+      <span class="title">JSONB</span>
     </a>
     <a class="next" href="isolation-levels.html">
       <span class="label">Next →</span>
-      <span class="title">XI · Isolation levels</span>
+      <span class="title">Isolation levels</span>
     </a>
   </nav>
 
@@ -282,6 +281,7 @@ SELECT pg_reload_conf();</code></pre>
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

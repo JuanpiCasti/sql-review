@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="explain-planner.html" aria-current="page">XVI · EXPLAIN</a>
+    <details class="chapter-menu"><summary>EXPLAIN</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">16</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter XVI · Storage</span>
+      <span class="eyebrow">Storage</span>
       <h1>EXPLAIN <em>&amp; the planner</em></h1>
       <p class="standfirst">Postgres turns your declarative SQL into an imperative plan. Reading that plan — and noticing when the planner has guessed wrong — is the single most useful debugging skill in the database.</p>
     </div>
@@ -35,7 +34,7 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 16.1</span> The two commands</h2>
+    <h2>The two commands</h2>
 
     <dl class="kv">
       <dt>EXPLAIN q</dt>           <dd>Print the planned tree with estimated costs. No execution.</dd>
@@ -59,12 +58,12 @@ ROLLBACK;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 16.2</span> Reading the output</h2>
+    <h2>Reading the output</h2>
 
     <p>A small example:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 16.1</span> A simple plan, annotated</p>
+      <p class="caption">A simple plan, annotated</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">EXPLAIN ANALYZE
 SELECT c.name, sum(o.total)
 FROM   customers c
@@ -104,7 +103,7 @@ Execution Time: 186.7 ms</pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 16.3</span> Plan nodes you'll see all the time</h2>
+    <h2>Plan nodes you'll see all the time</h2>
 
     <h3>Scans</h3>
     <dl class="kv">
@@ -132,7 +131,7 @@ Execution Time: 186.7 ms</pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 16.4</span> The cost model</h2>
+    <h2>The cost model</h2>
 
     <p>Each plan node has a cost formula. The numbers come from a handful of GUCs:</p>
 
@@ -150,7 +149,7 @@ Execution Time: 186.7 ms</pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 16.5</span> Statistics — why the planner is sometimes wrong</h2>
+    <h2>Statistics — why the planner is sometimes wrong</h2>
 
     <p>The planner estimates "how many rows match this predicate" using statistics gathered by <code>ANALYZE</code> (and run automatically by autovacuum): per-column most-common-values, histograms, null fractions, and average row width. The view <code>pg_stats</code> exposes them.</p>
 
@@ -168,7 +167,7 @@ ANALYZE addresses;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 16.6</span> Smells, in order of importance</h2>
+    <h2>Smells, in order of importance</h2>
 
     <ol>
       <li><strong>Estimated vs actual rows off by &gt; 10×.</strong> The planner is choosing the wrong strategy because its inputs are wrong. Fix stats first; don't waste time tuning indexes against bad estimates.</li>
@@ -181,7 +180,7 @@ ANALYZE addresses;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 16.7</span> Forcing the planner's hand</h2>
+    <h2>Forcing the planner's hand</h2>
 
     <p>Postgres has no query hints. The intentional design is that you fix the underlying problem — bad stats, missing index, mis-tuned cost GUC — rather than override the optimiser per query. But when you really must, the toolbox:</p>
 
@@ -224,11 +223,11 @@ ANALYZE addresses;</code></pre>
   <nav class="chapter-nav">
     <a class="prev" href="partitioning.html">
       <span class="label">← Previous</span>
-      <span class="title">XV · Partitioning</span>
+      <span class="title">Partitioning</span>
     </a>
     <a class="next" href="functions-and-triggers.html">
       <span class="label">Next →</span>
-      <span class="title">XVII · Functions &amp; triggers</span>
+      <span class="title">Functions &amp; triggers</span>
     </a>
   </nav>
 
@@ -238,6 +237,7 @@ ANALYZE addresses;</code></pre>
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

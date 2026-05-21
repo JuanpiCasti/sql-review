@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="isolation-levels.html" aria-current="page">XI · Isolation</a>
+    <details class="chapter-menu"><summary>Isolation</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">11</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter XI · Concurrency</span>
+      <span class="eyebrow">Concurrency</span>
       <h1>Isolation levels, <em>or, what your snapshot sees</em></h1>
       <p class="standfirst">The contract Postgres offers between concurrent transactions — and the four anomalies it lets you choose to prevent.</p>
     </div>
@@ -40,7 +39,7 @@
   </aside>
 
   <section>
-    <h2><span class="num">§ 11.1</span> The four anomalies</h2>
+    <h2>The four anomalies</h2>
 
     <p>The standard defines isolation negatively: a level is described by what it forbids. Four phenomena have names worth memorising.</p>
 
@@ -75,7 +74,7 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 11.2</span> Read Committed — the default</h2>
+    <h2>Read Committed — the default</h2>
 
     <p>At <strong>Read Committed</strong>, every <em>statement</em> sees a fresh snapshot of the database as of the moment that statement began. Two statements in the same transaction therefore can see different things, because committed work from other sessions slips in between them.</p>
 
@@ -116,9 +115,9 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 11.3</span> Repeatable Read — snapshot isolation</h2>
+    <h2>Repeatable Read — snapshot isolation</h2>
 
-    <p>At <strong>Repeatable Read</strong>, the snapshot is taken once, at the first non-transaction-control statement of the transaction, and every subsequent read in the transaction sees that same snapshot. The non-repeatable read from § 11.2 cannot happen: A's second <code>SELECT</code> returns <code>100</code>, not <code>150</code>, because B's commit happened after A's snapshot.</p>
+    <p>At <strong>Repeatable Read</strong>, the snapshot is taken once, at the first non-transaction-control statement of the transaction, and every subsequent read in the transaction sees that same snapshot. The non-repeatable read seen under Read Committed cannot happen: A's second <code>SELECT</code> returns <code>100</code>, not <code>150</code>, because B's commit happened after A's snapshot.</p>
 
     <p>Postgres's Repeatable Read is what the literature calls <strong>snapshot isolation</strong>. It also prevents the standard's phantom read — a re-run of <code>SELECT count(*) FROM orders WHERE total &gt; 100</code> returns the same count both times.</p>
 
@@ -161,7 +160,7 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 11.4</span> Serializable — SSI</h2>
+    <h2>Serializable — SSI</h2>
 
     <p><strong>Serializable</strong> in Postgres is implemented with <em>Serializable Snapshot Isolation</em> (SSI, Cahill 2008). It begins as ordinary snapshot isolation, then monitors read–write dependencies between concurrent transactions in the background. If it detects a pattern that <em>could</em> produce an anomaly — a "dangerous structure" of <code>rw</code>-antidependencies — it aborts one of the transactions with the same <code>40001</code> serialization failure.</p>
 
@@ -205,7 +204,7 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 11.5</span> Choosing a level</h2>
+    <h2>Choosing a level</h2>
 
     <p>A practical decision rule:</p>
 
@@ -245,11 +244,11 @@
   <nav class="chapter-nav">
     <a class="prev" href="transactions.html">
       <span class="label">← Previous</span>
-      <span class="title">X · Transactions</span>
+      <span class="title">Transactions</span>
     </a>
     <a class="next" href="mvcc.html">
       <span class="label">Next →</span>
-      <span class="title">XII · MVCC &amp; VACUUM</span>
+      <span class="title">MVCC &amp; VACUUM</span>
     </a>
   </nav>
 
@@ -259,6 +258,7 @@
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

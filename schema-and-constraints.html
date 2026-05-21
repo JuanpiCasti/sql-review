@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="schema-and-constraints.html" aria-current="page">III · Schema &amp; constraints</a>
+    <details class="chapter-menu"><summary>Schema &amp; constraints</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">03</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter III · Foundations</span>
+      <span class="eyebrow">Foundations</span>
       <h1>Schema design, <em>or, what the database refuses to allow</em></h1>
       <p class="standfirst">A constraint is a guarantee the database makes on your behalf — a rule that no bug, no race, and no junior engineer with a <code>psql</code> prompt can violate.</p>
     </div>
@@ -35,31 +34,31 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 3.1</span> <code>CREATE TABLE</code> anatomy</h2>
+    <h2><code>CREATE TABLE</code> anatomy</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 3.2</span> Primary keys — surrogate vs natural</h2>
+    <h2>Primary keys — surrogate vs natural</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 3.3</span> Foreign keys and <code>ON DELETE</code> actions</h2>
+    <h2>Foreign keys and <code>ON DELETE</code> actions</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 3.4</span> <code>CHECK</code>, <code>UNIQUE</code>, <code>EXCLUDE</code></h2>
+    <h2><code>CHECK</code>, <code>UNIQUE</code>, <code>EXCLUDE</code></h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 3.5</span> <code>NOT NULL</code> and defaults</h2>
+    <h2><code>NOT NULL</code> and defaults</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 3.6</span> Generated columns</h2>
+    <h2>Generated columns</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 3.7</span> Safe vs locking <code>ALTER TABLE</code></h2>
+    <h2>Safe vs locking <code>ALTER TABLE</code></h2>
   </section>
 
   <div class="cheat-sheet">
@@ -91,11 +90,11 @@
   <nav class="chapter-nav">
     <a class="prev" href="data-types-and-null.html">
       <span class="label">← Previous</span>
-      <span class="title">II · Data types &amp; NULL</span>
+      <span class="title">Data types &amp; NULL</span>
     </a>
     <a class="next" href="joins.html">
       <span class="label">Next →</span>
-      <span class="title">IV · Joins</span>
+      <span class="title">Joins</span>
     </a>
   </nav>
 
@@ -105,6 +104,7 @@
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

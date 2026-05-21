@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="locking-deadlocks.html" aria-current="page">XIII · Locking</a>
+    <details class="chapter-menu"><summary>Locking</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">13</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter XIII · Concurrency</span>
+      <span class="eyebrow">Concurrency</span>
       <h1>Locks &amp; deadlocks, <em>or, who's waiting on whom</em></h1>
       <p class="standfirst">Eight table-lock modes, four row-lock modes, one deadlock detector. The mechanics behind every <code>blocked</code> session and every <code>40P01</code> error in production.</p>
     </div>
@@ -35,7 +34,7 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 13.1</span> Eight table-lock modes</h2>
+    <h2>Eight table-lock modes</h2>
 
     <p>Every statement that touches a table takes a <em>table-level</em> lock in one of eight modes. The modes form a hierarchy from <em>weakest</em> (held by everyone, conflicts with nothing but DDL) to <em>strongest</em> (held alone, conflicts with everything).</p>
 
@@ -91,7 +90,7 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 13.2</span> Four row-lock modes</h2>
+    <h2>Four row-lock modes</h2>
 
     <p>Inside a table, individual rows can be locked by <code>SELECT</code>. There are four row-lock strengths, from weakest to strongest:</p>
 
@@ -105,7 +104,7 @@
     <p>The two weaker modes exist because of foreign keys. An <code>INSERT</code> into a child table needs to verify the parent row exists, but should not block parallel updates to non-key columns of that parent. The KEY-aware modes carve out exactly that gap.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 13.1</span> Pessimistic locking with FOR UPDATE</p>
+      <p class="caption">Pessimistic locking with FOR UPDATE</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
 SELECT * FROM accounts WHERE id = 1 FOR UPDATE;
 -- any concurrent UPDATE / DELETE / SELECT FOR UPDATE on this row blocks here
@@ -116,7 +115,7 @@ COMMIT;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 13.3</span> NOWAIT and SKIP LOCKED</h2>
+    <h2>NOWAIT and SKIP LOCKED</h2>
 
     <p>By default, locking <code>SELECT</code>s wait. Two modifiers change that:</p>
 
@@ -128,7 +127,7 @@ COMMIT;</code></pre>
     <p><code>SKIP LOCKED</code> is the trick that lets you build a low-contention work queue inside a Postgres table — no Redis, no SQS, just a table and a query:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 13.2</span> A work queue in nine lines</p>
+      <p class="caption">A work queue in nine lines</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- N workers run this in a loop, in parallel
 BEGIN;
 SELECT id, payload
@@ -148,7 +147,7 @@ COMMIT;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 13.4</span> Deadlocks</h2>
+    <h2>Deadlocks</h2>
 
     <p>A <strong>deadlock</strong> is a cycle: A holds X and wants Y; B holds Y and wants X. Both sit forever. Postgres detects this with a background check that runs <code>deadlock_timeout</code> (default <code>1s</code>) after any session starts waiting on a lock. If a cycle is found, Postgres picks one transaction as victim and aborts it with SQLSTATE <code>40P01</code>:</p>
 
@@ -179,12 +178,12 @@ COMMIT;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 13.5</span> Inspecting locks</h2>
+    <h2>Inspecting locks</h2>
 
     <p>The system view <code>pg_locks</code> shows every lock currently held or waiting in the cluster. Joined to <code>pg_stat_activity</code>, it becomes the answer to "what is blocking what?":</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 13.3</span> Who is blocking whom</p>
+      <p class="caption">Who is blocking whom</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT blocked.pid     AS blocked_pid,
        blocked.query   AS blocked_query,
        blocking.pid    AS blocking_pid,
@@ -213,12 +212,12 @@ SELECT pg_terminate_backend(21887); -- closes the connection entirely</code></pr
   </section>
 
   <section>
-    <h2><span class="num">§ 13.6</span> Advisory locks</h2>
+    <h2>Advisory locks</h2>
 
     <p>Sometimes you need mutual exclusion that has nothing to do with rows — running a singleton cron job, serialising a leader-election protocol, gating a cache rebuild. <strong>Advisory locks</strong> are application-defined locks identified by one or two arbitrary integers, with no relation to any table.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 13.4</span> A singleton cron lock</p>
+      <p class="caption">A singleton cron lock</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- one worker grabs it; the others find it taken and exit
 SELECT pg_try_advisory_lock(42) AS got_it;
 
@@ -248,7 +247,7 @@ SELECT pg_advisory_xact_lock(42);</code></pre>
       <dt>deadlock_timeout</dt>   <dd>Default 1s. Time before deadlock detector runs.</dd>
       <dt>40P01</dt>              <dd>Deadlock victim error. Always retry the whole transaction.</dd>
       <dt>lock_timeout</dt>       <dd>Per-session cap on how long any single lock wait can take. Set on migrations.</dd>
-      <dt>pg_blocking_pids(pid)</dt><dd>Array of PIDs blocking the given PID. The query in § 13.5 is built on it.</dd>
+      <dt>pg_blocking_pids(pid)</dt><dd>Array of PIDs blocking the given PID. The blocker query earlier in this chapter is built on it.</dd>
       <dt>Advisory locks</dt>     <dd>Application-defined mutexes. Session- or transaction-scoped.</dd>
     </dl>
   </div>
@@ -266,11 +265,11 @@ SELECT pg_advisory_xact_lock(42);</code></pre>
   <nav class="chapter-nav">
     <a class="prev" href="mvcc.html">
       <span class="label">← Previous</span>
-      <span class="title">XII · MVCC &amp; VACUUM</span>
+      <span class="title">MVCC &amp; VACUUM</span>
     </a>
     <a class="next" href="indexes.html">
       <span class="label">Next →</span>
-      <span class="title">XIV · Indexes</span>
+      <span class="title">Indexes</span>
     </a>
   </nav>
 
@@ -280,6 +279,7 @@ SELECT pg_advisory_xact_lock(42);</code></pre>
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

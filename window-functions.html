@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="window-functions.html" aria-current="page">VI · Windows</a>
+    <details class="chapter-menu"><summary>Windows</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">06</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter VI · Querying</span>
+      <span class="eyebrow">Querying</span>
       <h1>Window functions, <em>or, aggregation without collapse</em></h1>
       <p class="standfirst">Compute per-row values that depend on other rows — running totals, ranks, lags, moving averages — without losing the rows themselves. The single most powerful clause in SQL.</p>
     </div>
@@ -40,7 +39,7 @@
   </aside>
 
   <section>
-    <h2><span class="num">§ 6.1</span> Anatomy of the OVER clause</h2>
+    <h2>Anatomy of the OVER clause</h2>
 
     <p>The shape:</p>
 
@@ -50,10 +49,10 @@
   frame_clause                            -- which neighbouring rows count
 )</code></pre>
 
-    <p>All three pieces are optional. Omit <code>PARTITION BY</code> and the whole result is one partition. Omit <code>ORDER BY</code> and the rows have no defined order inside the partition. Omit the frame and Postgres uses a default frame that depends on whether <code>ORDER BY</code> is present (the source of the famous <code>LAST_VALUE</code> trap — § 6.5).</p>
+    <p>All three pieces are optional. Omit <code>PARTITION BY</code> and the whole result is one partition. Omit <code>ORDER BY</code> and the rows have no defined order inside the partition. Omit the frame and Postgres uses a default frame that depends on whether <code>ORDER BY</code> is present (the source of the famous <code>LAST_VALUE</code> trap, covered below).</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 6.1</span> Running total per region</p>
+      <p class="caption">Running total per region</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region,
        sold_at,
        revenue,
@@ -80,7 +79,7 @@ ORDER  BY region, sold_at;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 6.2</span> The ranking family</h2>
+    <h2>The ranking family</h2>
 
     <p>Three almost-identical functions that differ only in how they treat ties:</p>
 
@@ -91,7 +90,7 @@ ORDER  BY region, sold_at;</code></pre>
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 6.2</span> Ranking salespeople within each region by revenue</p>
+      <p class="caption">Ranking salespeople within each region by revenue</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region,
        salesperson,
        revenue,
@@ -133,10 +132,10 @@ ORDER  BY region, revenue DESC;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 6.3</span> Top-N per group via window functions</h2>
+    <h2>Top-N per group via window functions</h2>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 6.3</span> Top 2 salespeople per region</p>
+      <p class="caption">Top 2 salespeople per region</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT *
 FROM (
   SELECT region, salesperson, revenue,
@@ -146,16 +145,16 @@ FROM (
 WHERE rn &lt;= 2;</code></pre>
     </div>
 
-    <p>Why the subquery? Window functions are computed <em>after</em> <code>WHERE</code> and <code>GROUP BY</code> but <em>before</em> the outer <code>SELECT</code>'s list. You can't filter on <code>rn</code> in the same query that defines it — you need an outer scope. (Compare with the <code>LATERAL</code> spelling in <a href="joins.html">Ch. IV § 4.7</a>: for small N and many groups, <code>LATERAL</code> with <code>LIMIT</code> usually wins; for moderate N or a small number of groups, the window-function form is fine.)</p>
+    <p>Why the subquery? Window functions are computed <em>after</em> <code>WHERE</code> and <code>GROUP BY</code> but <em>before</em> the outer <code>SELECT</code>'s list. You can't filter on <code>rn</code> in the same query that defines it — you need an outer scope. (Compare with the <code>LATERAL</code> spelling in the <a href="joins.html">joins chapter</a>: for small N and many groups, <code>LATERAL</code> with <code>LIMIT</code> usually wins; for moderate N or a small number of groups, the window-function form is fine.)</p>
   </section>
 
   <section>
-    <h2><span class="num">§ 6.4</span> LAG and LEAD</h2>
+    <h2>LAG and LEAD</h2>
 
     <p><code>lag(x, offset, default)</code> returns <code>x</code> from the row <code>offset</code> positions <em>before</em> the current row; <code>lead</code> looks forward. Both are invaluable for differences, gaps, and state-change detection.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 6.4</span> Daily delta in stock price</p>
+      <p class="caption">Daily delta in stock price</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT ticker,
        day,
        price,
@@ -170,7 +169,7 @@ ORDER  BY ticker, day;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 6.5</span> The frame clause</h2>
+    <h2>The frame clause</h2>
 
     <p>Inside each partition, the <em>frame</em> defines which rows the aggregate sees for the current row. This is where window functions get powerful — and where they confuse people most.</p>
 
@@ -198,7 +197,7 @@ ORDER  BY ticker, day;</code></pre>
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 6.5</span> Seven-day moving average</p>
+      <p class="caption">Seven-day moving average</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT day,
        sales,
        avg(sales) OVER (
@@ -224,12 +223,12 @@ FROM   daily_sales;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 6.6</span> Named windows</h2>
+    <h2>Named windows</h2>
 
     <p>When several functions share the same window, define it once with <code>WINDOW</code> and refer to it by name. Ex. 6.2 and 8.4 already used this. The full grammar lets later windows <em>extend</em> earlier ones:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 6.6</span> Inheriting a window</p>
+      <p class="caption">Inheriting a window</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region, salesperson, revenue,
        rank()       OVER w1                 AS rnk,
        sum(revenue) OVER w2                 AS running_total
@@ -243,7 +242,7 @@ WINDOW
   </section>
 
   <section>
-    <h2><span class="num">§ 6.7</span> first_value, last_value, nth_value</h2>
+    <h2>first_value, last_value, nth_value</h2>
 
     <p>Three positional functions, each returning a value from a specific row within the frame:</p>
 
@@ -254,7 +253,7 @@ WINDOW
     </dl>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 6.7</span> Best-revenue salesperson alongside each row, per region</p>
+      <p class="caption">Best-revenue salesperson alongside each row, per region</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region, salesperson, revenue,
        first_value(salesperson) OVER (
          PARTITION BY region ORDER BY revenue DESC
@@ -266,7 +265,7 @@ FROM   sales;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 6.8</span> Execution model and indexes</h2>
+    <h2>Execution model and indexes</h2>
 
     <p>A query with window functions executes in this order:</p>
 
@@ -311,11 +310,11 @@ FROM   sales;</code></pre>
   <nav class="chapter-nav">
     <a class="prev" href="aggregates-group-by.html">
       <span class="label">← Previous</span>
-      <span class="title">V · Aggregates &amp; GROUP BY</span>
+      <span class="title">Aggregates &amp; GROUP BY</span>
     </a>
     <a class="next" href="ctes.html">
       <span class="label">Next →</span>
-      <span class="title">VII · CTEs &amp; recursion</span>
+      <span class="title">CTEs &amp; recursion</span>
     </a>
   </nav>
 
@@ -325,6 +324,7 @@ FROM   sales;</code></pre>
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="replication-and-wal.html" aria-current="page">XIX · Replication &amp; WAL</a>
+    <details class="chapter-menu"><summary>Replication &amp; WAL</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">19</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter XIX · Operations</span>
+      <span class="eyebrow">Operations</span>
       <h1>Replication &amp; WAL, <em>or, durability past the disk</em></h1>
       <p class="standfirst">A log of every change the server has ever made, streamed to a hot standby, replayed on failover, and archived for point-in-time recovery.</p>
     </div>
@@ -35,27 +34,27 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 19.1</span> What WAL is and how it gets written</h2>
+    <h2>What WAL is and how it gets written</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 19.2</span> Physical replication — streaming, replication slots</h2>
+    <h2>Physical replication — streaming, replication slots</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 19.3</span> Logical replication and <code>wal_level = logical</code></h2>
+    <h2>Logical replication and <code>wal_level = logical</code></h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 19.4</span> Synchronous vs asynchronous commit</h2>
+    <h2>Synchronous vs asynchronous commit</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 19.5</span> Failover, <code>pg_rewind</code>, replication lag</h2>
+    <h2>Failover, <code>pg_rewind</code>, replication lag</h2>
   </section>
 
   <section>
-    <h2><span class="num">§ 19.6</span> PITR with <code>pg_basebackup</code> + WAL archive</h2>
+    <h2>PITR with <code>pg_basebackup</code> + WAL archive</h2>
   </section>
 
   <div class="cheat-sheet">
@@ -88,7 +87,7 @@
   <nav class="chapter-nav">
     <a class="prev" href="configuration-and-tuning.html">
       <span class="label">← Previous</span>
-      <span class="title">XVIII · Configuration &amp; tuning</span>
+      <span class="title">Configuration &amp; tuning</span>
     </a>
     <a class="next" href="index.html">
       <span class="label">Next →</span>
@@ -102,6 +101,7 @@
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

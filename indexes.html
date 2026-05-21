@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="indexes.html" aria-current="page">XIV · Indexes</a>
+    <details class="chapter-menu"><summary>Indexes</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">14</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter XIV · Storage</span>
+      <span class="eyebrow">Storage</span>
       <h1>Indexes, <em>or, every shortcut Postgres knows</em></h1>
       <p class="standfirst">Five fundamental index types, four ways to modify them, and one rule: the right index for the query you're trying to make fast is rarely the one you'd add by default.</p>
     </div>
@@ -35,7 +34,7 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 14.1</span> The five index types</h2>
+    <h2>The five index types</h2>
 
     <div class="data-table">
       <p class="caption">What each index type is good for</p>
@@ -55,12 +54,12 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 14.2</span> B-tree, in detail</h2>
+    <h2>B-tree, in detail</h2>
 
     <p>The default. Created by every <code>PRIMARY KEY</code> and <code>UNIQUE</code> constraint. A balanced search tree whose leaves are sorted by the indexed key. Supports every operator that can be expressed as an ordering — <code>=</code>, <code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>BETWEEN</code>, <code>IN</code>, and prefix <code>LIKE</code> patterns like <code>'foo%'</code>.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 14.1</span> The composite-key rule</p>
+      <p class="caption">The composite-key rule</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON orders (customer_id, placed_at);
 
 -- supported by the index:
@@ -82,12 +81,12 @@ SELECT * FROM orders WHERE placed_at &gt; now() - interval '7 days';
   </section>
 
   <section>
-    <h2><span class="num">§ 14.3</span> GIN — generalised inverted index</h2>
+    <h2>GIN — generalised inverted index</h2>
 
     <p>For columns whose values are <em>composite</em> — arrays, JSONB documents, tsvectors — and you want to ask "which rows contain element X?", GIN inverts the storage: one index entry per distinct element, pointing at every row that contains it.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 14.2</span> JSONB and array indexes</p>
+      <p class="caption">JSONB and array indexes</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- arrays
 CREATE INDEX ON posts USING gin (tags);
 SELECT * FROM posts WHERE tags @&gt; ARRAY['postgres'];
@@ -110,12 +109,12 @@ SELECT * FROM docs WHERE to_tsvector('english', body) @@ to_tsquery('database &a
   </section>
 
   <section>
-    <h2><span class="num">§ 14.4</span> GiST — generalised search tree</h2>
+    <h2>GiST — generalised search tree</h2>
 
     <p>A pluggable framework for index types over data with no natural total order: geometric points, ranges, IP networks, full-text rankings. PostGIS lives here. So do range types — and the most underused feature they enable, <em>exclusion constraints</em>:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 14.3</span> No two reservations may overlap for the same room</p>
+      <p class="caption">No two reservations may overlap for the same room</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE EXTENSION IF NOT EXISTS btree_gist;  -- to mix scalar and range
 
 CREATE TABLE reservations (
@@ -134,25 +133,25 @@ CREATE TABLE reservations (
   </section>
 
   <section>
-    <h2><span class="num">§ 14.5</span> BRIN — for big, ordered tables</h2>
+    <h2>BRIN — for big, ordered tables</h2>
 
     <p>A BRIN index stores, for each block-range of the table, the minimum and maximum value of the indexed column in that range. A query for <code>created_at &gt; X</code> can skip every range whose max is &lt; X — without storing one index entry per row.</p>
 
     <p>The trade-off: BRIN only helps if the data is <em>physically ordered</em> by the indexed column. On an append-only events table indexed on <code>created_at</code>, a BRIN index a few kilobytes in size can prune 99% of a terabyte-scale table. On a randomly-distributed column, BRIN does nothing for you — every range will have a wide min/max and the scan can skip nothing.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 14.4</span> Time-series BRIN</p>
+      <p class="caption">Time-series BRIN</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON events USING brin (created_at) WITH (pages_per_range = 128);</code></pre>
     </div>
   </section>
 
   <section>
-    <h2><span class="num">§ 14.6</span> Partial indexes</h2>
+    <h2>Partial indexes</h2>
 
     <p>An index with a <code>WHERE</code> clause. The index covers only the rows matching the predicate. Smaller, cheaper to maintain, and often better-suited to skewed data.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 14.5</span> Index only the open orders</p>
+      <p class="caption">Index only the open orders</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- if 95% of orders are 'closed' and you only ever query the open ones:
 CREATE INDEX ON orders (placed_at)
 WHERE status = 'open';
@@ -168,12 +167,12 @@ SELECT * FROM orders WHERE status = 'open' ORDER BY placed_at DESC LIMIT 50;</co
   </section>
 
   <section>
-    <h2><span class="num">§ 14.7</span> Expression indexes</h2>
+    <h2>Expression indexes</h2>
 
     <p>Index a function of a column rather than the column itself. The query must use the exact same expression for the index to apply.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 14.6</span> Case-insensitive lookup</p>
+      <p class="caption">Case-insensitive lookup</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON users (lower(email));
 SELECT * FROM users WHERE lower(email) = lower('Ada@Example.com');
 
@@ -185,14 +184,14 @@ CREATE INDEX ON events (date_trunc('day', created_at));</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 14.8</span> Covering indexes and INCLUDE</h2>
+    <h2>Covering indexes and INCLUDE</h2>
 
     <p>A query that can be satisfied entirely from an index — without touching the table heap — is an <em>index-only scan</em>. It's the fastest plan Postgres has. The index must contain every column the query references.</p>
 
     <p>You can append extra payload columns to a B-tree index without making them part of the search key, via <code>INCLUDE</code>:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 14.7</span> An INCLUDE-covered query</p>
+      <p class="caption">An INCLUDE-covered query</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON orders (customer_id) INCLUDE (placed_at, total);
 
 SELECT placed_at, total
@@ -205,12 +204,12 @@ WHERE  customer_id = 1;
   </section>
 
   <section>
-    <h2><span class="num">§ 14.9</span> CREATE INDEX CONCURRENTLY</h2>
+    <h2>CREATE INDEX CONCURRENTLY</h2>
 
     <p>Plain <code>CREATE INDEX</code> takes a <code>SHARE</code> lock — blocking all writes for the duration. On a large table that's unacceptable. <code>CREATE INDEX CONCURRENTLY</code> trades a longer build time for non-blocking behaviour: it builds in two scans, allowing concurrent writes throughout.</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 14.8</span> The production-safe spelling</p>
+      <p class="caption">The production-safe spelling</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX CONCURRENTLY idx_orders_customer ON orders (customer_id);</code></pre>
     </div>
 
@@ -224,12 +223,12 @@ CREATE INDEX CONCURRENTLY idx_orders_customer ON orders (customer_id);</code></p
   </section>
 
   <section>
-    <h2><span class="num">§ 14.10</span> Finding indexes worth dropping</h2>
+    <h2>Finding indexes worth dropping</h2>
 
     <p>Every index slows down writes and consumes disk. Periodically audit:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 14.9</span> Unused and duplicate indexes</p>
+      <p class="caption">Unused and duplicate indexes</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">-- indexes that have never been scanned since last stats reset
 SELECT s.schemaname, s.relname, s.indexrelname,
        pg_size_pretty(pg_relation_size(s.indexrelid)) AS size,
@@ -277,11 +276,11 @@ ORDER  BY pg_relation_size(s.indexrelid) DESC;</code></pre>
   <nav class="chapter-nav">
     <a class="prev" href="locking-deadlocks.html">
       <span class="label">← Previous</span>
-      <span class="title">XIII · Locking &amp; deadlocks</span>
+      <span class="title">Locking &amp; deadlocks</span>
     </a>
     <a class="next" href="partitioning.html">
       <span class="label">Next →</span>
-      <span class="title">XV · Partitioning</span>
+      <span class="title">Partitioning</span>
     </a>
   </nav>
 
@@ -291,6 +290,7 @@ ORDER  BY pg_relation_size(s.indexrelid) DESC;</code></pre>
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>

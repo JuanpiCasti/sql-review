@@ -15,16 +15,15 @@
   <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
   <nav>
     <a href="index.html">Contents</a>
-    <a href="mvcc.html" aria-current="page">XII · MVCC</a>
+    <details class="chapter-menu"><summary>MVCC</summary></details>
   </nav>
 </header>
 
 <main class="page">
 
   <header class="masthead">
-    <div class="chapter-no">12</div>
     <div class="title-block">
-      <span class="eyebrow">Chapter XII · Concurrency</span>
+      <span class="eyebrow">Concurrency</span>
       <h1>MVCC &amp; VACUUM, <em>or, the immortal row</em></h1>
       <p class="standfirst">Postgres never updates a row in place. Every change writes a new tuple; every delete merely marks the old one. The machinery that decides which version <em>you</em> see — and which long-dead ones can finally be erased — is MVCC.</p>
     </div>
@@ -35,7 +34,7 @@
   </section>
 
   <section>
-    <h2><span class="num">§ 12.1</span> xmin, xmax, and the tuple header</h2>
+    <h2>xmin, xmax, and the tuple header</h2>
 
     <p>Every tuple stored on disk carries a small header. The two fields that matter for visibility are:</p>
 
@@ -48,7 +47,7 @@
     <p>These are real system columns. You can select them like any other:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 12.1</span> Inspecting tuple versions</p>
+      <p class="caption">Inspecting tuple versions</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE t (id int, val text);
 INSERT INTO t VALUES (1, 'first');
 UPDATE t SET val = 'second' WHERE id = 1;
@@ -74,7 +73,7 @@ SELECT ctid, xmin, xmax, * FROM t;</code></pre>
   </aside>
 
   <section>
-    <h2><span class="num">§ 12.2</span> Snapshots and visibility</h2>
+    <h2>Snapshots and visibility</h2>
 
     <p>When a transaction takes a snapshot it captures three things: the current transaction ID counter (xmax of the snapshot), the oldest still-running transaction (xmin), and the list of in-progress transaction IDs in between (<code>xip</code>).</p>
 
@@ -89,7 +88,7 @@ SELECT ctid, xmin, xmax, * FROM t;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 12.3</span> HOT updates</h2>
+    <h2>HOT updates</h2>
 
     <p>An ordinary <code>UPDATE</code> must update every index on the table, because the new tuple lives at a new <code>ctid</code> and every index entry points to a <code>ctid</code>. This is expensive — on a table with ten indexes, ten index writes per row update.</p>
 
@@ -109,7 +108,7 @@ SELECT ctid, xmin, xmax, * FROM t;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 12.4</span> Dead tuples, bloat, and VACUUM</h2>
+    <h2>Dead tuples, bloat, and VACUUM</h2>
 
     <p>A tuple is <em>dead</em> when no current or future snapshot can see it — i.e. its <code>xmax</code> committed, and the oldest snapshot's xmin is past that commit. Until <code>VACUUM</code> runs, dead tuples occupy disk space, get scanned by sequential scans, and accumulate in indexes.</p>
 
@@ -125,12 +124,12 @@ SELECT ctid, xmin, xmax, * FROM t;</code></pre>
 
     <div class="callout warning">
       <span class="callout-label">The horizon</span>
-      <p>VACUUM can only remove tuples older than the <em>oldest snapshot</em> currently in use, anywhere. One forgotten <code>idle in transaction</code> session, one stuck replication slot, one abandoned <code>PREPARE TRANSACTION</code>, and your VACUUM does nothing — your tables grow without bound while VACUUM completes successfully every run. The query in § 12.6 is how you find it.</p>
+      <p>VACUUM can only remove tuples older than the <em>oldest snapshot</em> currently in use, anywhere. One forgotten <code>idle in transaction</code> session, one stuck replication slot, one abandoned <code>PREPARE TRANSACTION</code>, and your VACUUM does nothing — your tables grow without bound while VACUUM completes successfully every run. The blocker query later in this chapter is how you find it.</p>
     </div>
   </section>
 
   <section>
-    <h2><span class="num">§ 12.5</span> Autovacuum</h2>
+    <h2>Autovacuum</h2>
 
     <p>You don't run <code>VACUUM</code> by hand. The autovacuum launcher runs in the background and triggers a vacuum on a table when its dead-tuple count crosses a threshold:</p>
 
@@ -141,7 +140,7 @@ SELECT ctid, xmin, xmax, * FROM t;</code></pre>
     <p>Defaults are <code>50</code> + <code>0.2 × rows</code> — i.e. fire when dead tuples exceed 20% of the live row count. For a 100M-row table this is far too slack; tune the per-table storage parameters down:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 12.2</span> Tuning autovacuum per table</p>
+      <p class="caption">Tuning autovacuum per table</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER TABLE events SET (
   autovacuum_vacuum_scale_factor = 0.02,   -- 2% instead of 20%
   autovacuum_vacuum_threshold    = 1000,
@@ -153,12 +152,12 @@ SELECT ctid, xmin, xmax, * FROM t;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 12.6</span> Finding what blocks VACUUM</h2>
+    <h2>Finding what blocks VACUUM</h2>
 
     <p>One query that earns its keep. The <code>backend_xmin</code> column of <code>pg_stat_activity</code> shows the oldest transaction ID still needed by each session. The lowest value across the cluster is the horizon below which VACUUM cannot reclaim:</p>
 
     <div class="example">
-      <p class="caption"><span class="num">Ex. 12.3</span> The VACUUM horizon</p>
+      <p class="caption">The VACUUM horizon</p>
 <pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT pid,
        usename,
        state,
@@ -189,7 +188,7 @@ ORDER BY age(xmin) DESC NULLS LAST;</code></pre>
   </section>
 
   <section>
-    <h2><span class="num">§ 12.7</span> Wraparound</h2>
+    <h2>Wraparound</h2>
 
     <p>Transaction IDs are 32-bit. After ~2 billion transactions, they wrap. Postgres protects against this by periodically <em>freezing</em> old tuples — replacing their <code>xmin</code> with a sentinel that means "always visible". Freezing happens during <code>VACUUM</code>, and is triggered no later than <code>vacuum_freeze_table_age</code> (default 150M) since the table was last frozen.</p>
 
@@ -232,11 +231,11 @@ ORDER BY age(xmin) DESC NULLS LAST;</code></pre>
   <nav class="chapter-nav">
     <a class="prev" href="isolation-levels.html">
       <span class="label">← Previous</span>
-      <span class="title">XI · Isolation levels</span>
+      <span class="title">Isolation levels</span>
     </a>
     <a class="next" href="locking-deadlocks.html">
       <span class="label">Next →</span>
-      <span class="title">XIII · Locking &amp; deadlocks</span>
+      <span class="title">Locking &amp; deadlocks</span>
     </a>
   </nav>
 
@@ -246,6 +245,7 @@ ORDER BY age(xmin) DESC NULLS LAST;</code></pre>
   Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
 </footer>
 
+<script src="assets/chapter-nav.js" defer></script>
 <script src="assets/prism.js"></script>
 <script src="assets/prism-sql.js"></script>
 </body>
