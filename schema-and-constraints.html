@@ -36,30 +36,451 @@
 
   <section>
     <h2><code>CREATE TABLE</code> anatomy</h2>
+
+    <p>A table declaration is part data shape, part contract. The shape is the column list — names and types. The contract is everything else: defaults, nullability, per-row checks, multi-column keys, references to other tables. Every constraint you bake into the <code>CREATE TABLE</code> is a guarantee the database will keep on your behalf for the rest of the table's life.</p>
+
+    <p>A realistic declaration uses both column-level and table-level constraints:</p>
+
+    <div class="example">
+      <p class="caption">A booking table with one of each constraint kind</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE IF NOT EXISTS bookings (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  room_id     int          NOT NULL REFERENCES rooms (id),
+  guest_email text         NOT NULL CHECK (guest_email ~ '@'),
+  starts_at   timestamptz  NOT NULL,
+  ends_at     timestamptz  NOT NULL,
+  created_at  timestamptz  NOT NULL DEFAULT now(),
+  status      text         NOT NULL DEFAULT 'pending',
+
+  CONSTRAINT bookings_time_order CHECK (ends_at &gt; starts_at),
+  CONSTRAINT bookings_status_known
+    CHECK (status IN ('pending', 'confirmed', 'cancelled')),
+  CONSTRAINT bookings_room_slot_unique UNIQUE (room_id, starts_at)
+);</code></pre>
+    </div>
+
+    <p>The column-level constraints (<code>NOT NULL</code>, <code>DEFAULT</code>, inline <code>REFERENCES</code>, inline single-column <code>CHECK</code>) describe one column at a time. The table-level constraints below the column list describe rules that span columns: <code>ends_at &gt; starts_at</code> is two columns; <code>UNIQUE (room_id, starts_at)</code> is composite. Anything that involves more than one column has to live at the table level.</p>
+
+    <p>Two clauses every schema author should know:</p>
+
+    <dl class="kv">
+      <dt><code>IF NOT EXISTS</code></dt>
+      <dd>Make the <code>CREATE TABLE</code> idempotent. Useful in migration scripts you might re-run; harmless when the table already exists.</dd>
+      <dt><code>LIKE source_table INCLUDING ALL</code></dt>
+      <dd>Copy a table's column list, defaults, constraints, indexes, and storage settings into a new table. The shape is copied; the data is not. Handy for partition templates and staging tables.</dd>
+    </dl>
+
+    <p>Two table kinds worth mentioning in passing. <code>CREATE TEMP TABLE</code> creates a session-local table that disappears at the end of the session, useful inside complex one-shot scripts. <code>CREATE UNLOGGED TABLE</code> skips writing to the WAL — inserts are dramatically faster, but the table is truncated on crash and not replicated. Right for ephemeral caches, scratch space, and import staging; wrong for anything you care about.</p>
   </section>
 
   <section>
     <h2>Primary keys — surrogate vs natural</h2>
+
+    <p>Every table should have a primary key. Postgres does not require one — you can create a table without — but logical replication, most ORMs, <code>UPDATE</code>/<code>DELETE</code> tooling, and your future debugging self all assume one exists. Treat "no primary key" as a bug.</p>
+
+    <p>The choice is between a <strong>surrogate</strong> key (a meaningless identifier the database mints) and a <strong>natural</strong> key (a column or composite of columns that already identifies the row by its real-world meaning).</p>
+
+    <div class="example">
+      <p class="caption">Surrogate: a synthetic identifier the application never inspects</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE customers (
+  id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email text NOT NULL UNIQUE,
+  name  text NOT NULL
+);</code></pre>
+    </div>
+
+    <div class="example">
+      <p class="caption">Natural: a composite key that identifies the tuple by its meaning</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE order_lines (
+  order_id bigint NOT NULL REFERENCES orders (id),
+  line_no  int    NOT NULL,
+  sku      text   NOT NULL,
+  qty      int    NOT NULL CHECK (qty &gt; 0),
+  PRIMARY KEY (order_id, line_no)
+);</code></pre>
+    </div>
+
+    <p>Natural keys are appealing — the email <em>is</em> the user, the ISBN <em>is</em> the book — until the real world contradicts you. Emails change. People get married. ISBNs get reassigned. Country codes get renamed. Anywhere the "identifying" column might mutate, a surrogate key turns a multi-table cascading update into a one-table profile change. The pragmatic rule: surrogate for entities (rows that represent things in the world), natural for relationships (rows that exist because two entities are connected). <code>order_lines</code> above is correctly natural; <code>customers</code> is correctly surrogate.</p>
+
+    <p>Three ways to spell the surrogate:</p>
+
+    <dl class="kv">
+      <dt><code>bigserial</code></dt>
+      <dd>The legacy macro: creates a sequence, binds it as the column default, and "owns" the sequence with the table. Works fine; semantics are subtly looser than the SQL standard form (users can override the default by writing an explicit value, which can clash with the sequence later).</dd>
+      <dt><code>bigint GENERATED ALWAYS AS IDENTITY</code></dt>
+      <dd>The SQL-standard form, recommended for new code. Identical storage; tighter semantics — <code>ALWAYS</code> means inserts cannot override the value without explicit <code>OVERRIDING SYSTEM VALUE</code>. The sequence is managed declaratively and is easy to alter.</dd>
+      <dt><code>uuid DEFAULT gen_random_uuid()</code></dt>
+      <dd>128-bit, client-mintable, opaque. Twice the storage; worse B-tree locality for v4 random values. Right when the ID must be generated outside the database. See <a href="data-types-and-null.html#uuid">Data types &amp; NULL</a> for the trade-offs.</dd>
+    </dl>
+
+    <aside class="marginalia">
+      <span class="label">Idiom</span>
+      In new schemas, <code>GENERATED ALWAYS AS IDENTITY</code> is the right default. <code>bigserial</code> is everywhere in legacy code and isn't worth migrating mid-project, but reach for the standard form when you have the choice.
+    </aside>
   </section>
 
   <section>
     <h2>Foreign keys and <code>ON DELETE</code> actions</h2>
+
+    <p>A <strong>foreign key</strong> says: every value in this column must already exist in that column of that other table. The database refuses inserts and updates that would create an orphan, and it refuses to delete a parent row that would strand its children — unless you have told it, in advance and in writing, what to do instead.</p>
+
+    <p>Two syntactic forms, identical in what they enforce. The inline column-constraint form for the single-column case:</p>
+
+    <div class="example">
+      <p class="caption">Inline form</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE orders (
+  id          bigserial PRIMARY KEY,
+  customer_id bigint NOT NULL REFERENCES customers (id),
+  placed_at   timestamptz NOT NULL DEFAULT now()
+);</code></pre>
+    </div>
+
+    <p>And the table-level form, which you need whenever the key spans more than one column or you want to name the constraint yourself:</p>
+
+    <div class="example">
+      <p class="caption">Table-level form, composite key</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE order_lines (
+  order_id   bigint NOT NULL,
+  line_no    int    NOT NULL,
+  sku        text   NOT NULL,
+  qty        int    NOT NULL CHECK (qty &gt; 0),
+  PRIMARY KEY (order_id, line_no),
+  CONSTRAINT order_lines_order_fk
+    FOREIGN KEY (order_id) REFERENCES orders (id)
+    ON DELETE CASCADE
+);</code></pre>
+    </div>
+
+    <p>The referenced column(s) must be the parent's <code>PRIMARY KEY</code> or carry a <code>UNIQUE</code> constraint — Postgres needs a unique index to check the reference against, and it will refuse the <code>CREATE TABLE</code> otherwise. That index exists on the parent side for free. The <em>child</em> side gets nothing: there is no automatic index on <code>orders.customer_id</code>, and you almost always want to add one yourself.</p>
+
+    <h3>The five referential actions</h3>
+
+    <p>Both <code>ON DELETE</code> and <code>ON UPDATE</code> accept the same five actions, describing what happens to the child rows when the parent is removed or its key changes:</p>
+
+    <dl class="kv">
+      <dt><code>NO ACTION</code></dt>
+      <dd>The default. Raise an error if any child still references the parent. The check is performed at the end of the statement and can be deferred to <code>COMMIT</code> with <code>DEFERRABLE</code>.</dd>
+      <dt><code>RESTRICT</code></dt>
+      <dd>Same outcome as <code>NO ACTION</code> in the common case, but the check fires <em>immediately</em> and cannot be deferred. Use it when you want to forbid the operation outright with no escape hatch.</dd>
+      <dt><code>CASCADE</code></dt>
+      <dd>Delete the children too, or propagate the new key value to them. Convenient and dangerous in equal measure — a single <code>DELETE</code> can fan out across half the database.</dd>
+      <dt><code>SET NULL</code></dt>
+      <dd>Null the child's referencing column. The column must of course be nullable. You can optionally restrict it to a subset of the FK columns: <code>ON DELETE SET NULL (customer_id)</code>.</dd>
+      <dt><code>SET DEFAULT</code></dt>
+      <dd>Set the child's referencing column to its declared <code>DEFAULT</code>. If that default does not itself satisfy the foreign key, the action fails at the moment it fires, not at constraint creation.</dd>
+    </dl>
+
+    <aside class="marginalia">
+      <span class="label">Under the hood</span>
+      Foreign-key enforcement takes a <code>FOR KEY SHARE</code> row lock on the parent row for every insert or update of a child. That weaker mode exists precisely so two transactions inserting different children of the same parent don't block each other — see <a href="locking-deadlocks.html">Locking &amp; deadlocks</a>.
+    </aside>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Pitfall</span>
+      <p>Postgres does not create an index on the child's referencing column. Every <code>DELETE</code> or key-changing <code>UPDATE</code> on the parent must then scan the entire child table to find rows that might point at the row going away. On a million-row child this is the difference between a millisecond and a minute. If you write <code>REFERENCES customers (id)</code>, write <code>CREATE INDEX ON orders (customer_id);</code> on the next line.</p>
+    </div>
+
+    <h3>Deferring the check for cyclic references</h3>
+
+    <p>Some schemas are unavoidably circular — an <code>employees</code> table where every row references its manager, or a pair of tables that reference each other. A strict per-statement check makes the very first <code>INSERT</code> impossible: there is no row to reference yet. The fix is to mark the constraint <code>DEFERRABLE</code> and let Postgres postpone the check to <code>COMMIT</code>:</p>
+
+    <div class="example">
+      <p class="caption">Self-referential FK, deferred</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE employees (
+  id         bigserial PRIMARY KEY,
+  name       text NOT NULL,
+  manager_id bigint REFERENCES employees (id)
+    DEFERRABLE INITIALLY DEFERRED
+);
+
+BEGIN;
+INSERT INTO employees (id, name, manager_id) VALUES (1, 'Ada',   2);
+INSERT INTO employees (id, name, manager_id) VALUES (2, 'Grace', 1);
+COMMIT;  -- both rows exist; the check passes here, not above</code></pre>
+    </div>
+
+    <p>You can also leave it <code>INITIALLY IMMEDIATE</code> and switch on demand inside a transaction with <code>SET CONSTRAINTS ALL DEFERRED</code>. What you <em>cannot</em> do is deferrability via <code>ALTER</code>: a constraint that was created without <code>DEFERRABLE</code> can never be deferred. If you might ever want to defer it, declare it deferrable up front. <code>RESTRICT</code>, by definition, is never deferrable regardless.</p>
+
+    <h3>Adding a foreign key to a big table</h3>
+
+    <p>The naive <code>ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY</code> takes a <code>SHARE ROW EXCLUSIVE</code> lock on both tables and scans the child to validate every existing row. On a hot table that is downtime. The two-step does the validation without the long lock:</p>
+
+    <div class="example">
+      <p class="caption">Online FK addition</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER TABLE orders
+  ADD CONSTRAINT orders_customer_fk
+  FOREIGN KEY (customer_id) REFERENCES customers (id)
+  NOT VALID;                       -- enforces on new rows only; quick
+
+ALTER TABLE orders
+  VALIDATE CONSTRAINT orders_customer_fk;  -- scans existing rows; weaker lock</code></pre>
+    </div>
+
+    <p>The <code>NOT VALID</code> constraint begins enforcing on every subsequent <code>INSERT</code> and <code>UPDATE</code> immediately; the later <code>VALIDATE</code> only has to confirm the pre-existing rows. The pattern generalises to <code>CHECK</code> constraints too, and is the subject of the <em>Safe vs locking <code>ALTER TABLE</code></em> section below.</p>
   </section>
 
   <section>
     <h2><code>CHECK</code>, <code>UNIQUE</code>, <code>EXCLUDE</code></h2>
+
+    <p>Three constraint types past the foreign key, three different jobs. <code>CHECK</code> validates a row against itself, <code>UNIQUE</code> validates a row against the rest of the table by exact match, <code>EXCLUDE</code> validates a row against the rest of the table by an arbitrary operator.</p>
+
+    <h3><code>CHECK</code></h3>
+
+    <p>A row-level boolean predicate. The constraint fires on every <code>INSERT</code> and <code>UPDATE</code>; if the expression evaluates to <code>false</code> the statement raises <code>23514</code>. <code>NULL</code> is treated as "satisfied," which sometimes surprises people — <code>CHECK (col &gt; 0)</code> still allows <code>NULL</code> in <code>col</code> unless you also write <code>NOT NULL</code>.</p>
+
+    <div class="example">
+      <p class="caption">Single-column and cross-column CHECKs</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE invoices (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  subtotal    numeric(12, 2) NOT NULL CHECK (subtotal &gt;= 0),
+  tax         numeric(12, 2) NOT NULL CHECK (tax &gt;= 0),
+  total       numeric(12, 2) NOT NULL,
+  issued_at   timestamptz NOT NULL,
+  due_at      timestamptz NOT NULL,
+
+  CONSTRAINT invoices_total_sums  CHECK (total = subtotal + tax),
+  CONSTRAINT invoices_due_after   CHECK (due_at &gt;= issued_at)
+);</code></pre>
+    </div>
+
+    <p>The expression must be <code>IMMUTABLE</code> — no <code>now()</code>, no <code>random()</code>, no subqueries, no references to other tables. Postgres enforces this at constraint-creation time: writing <code>CHECK (created_at &lt; now())</code> is rejected with <code>cannot use volatile function … in check constraint</code>. The reason is that the check must be reproducible — a stored row that satisfied the constraint on insert must still satisfy it on a later <code>pg_dump</code> reload, and a non-deterministic predicate can't make that guarantee.</p>
+
+    <h3><code>UNIQUE</code></h3>
+
+    <p>A uniqueness constraint, backed by a unique B-tree index. The index is automatically created and dropped with the constraint; you can name the constraint, and the index inherits the name. <code>UNIQUE</code> can be inline (single column) or table-level (composite).</p>
+
+    <p>The default NULL semantics are the trap: two NULLs are <em>not</em> considered equal, so a <code>UNIQUE</code> column happily accepts as many NULL rows as you can throw at it. Postgres 15 added <code>NULLS NOT DISTINCT</code> to flip that:</p>
+
+    <div class="example">
+      <p class="caption">Default NULL semantics vs <code>NULLS NOT DISTINCT</code></p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE a (email text UNIQUE);
+INSERT INTO a VALUES (NULL), (NULL);   -- both succeed
+
+CREATE TABLE b (email text UNIQUE NULLS NOT DISTINCT);
+INSERT INTO b VALUES (NULL);
+INSERT INTO b VALUES (NULL);
+-- ERROR:  duplicate key value violates unique constraint "b_email_key"
+-- SQLSTATE: 23505</code></pre>
+    </div>
+
+    <p>The other common pattern is a <strong>partial unique index</strong> — uniqueness that only applies to a subset of rows. Postgres expresses this as a unique index with a <code>WHERE</code> clause, not as a <code>UNIQUE</code> constraint:</p>
+
+    <div class="example">
+      <p class="caption">"Only one active row per user"</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE UNIQUE INDEX one_active_subscription_per_user
+  ON subscriptions (user_id)
+  WHERE status = 'active';</code></pre>
+    </div>
+
+    <p>Inactive rows can repeat freely; the database guarantees there is at most one <em>active</em> subscription per user. This pattern is everywhere — soft-deleted rows, draft documents, current employer of an employee — and is impossible to express with a plain <code>UNIQUE</code> constraint.</p>
+
+    <h3><code>EXCLUDE</code></h3>
+
+    <p>The most powerful and least known of the three. An <code>EXCLUDE</code> constraint says: "no two rows where these column pairs satisfy these operators." Plain <code>UNIQUE</code> is the special case where all the operators are <code>=</code>. Replace any of them with <code>&amp;&amp;</code> (range overlap), <code>&amp;&lt;</code> (geometric strictly-left-of), or any other operator with an operator-class definition, and you get constraints no other relational database can express declaratively.</p>
+
+    <p>The canonical example is non-overlapping reservations:</p>
+
+    <div class="example">
+      <p class="caption">Non-overlapping bookings, enforced by the database</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE EXTENSION IF NOT EXISTS btree_gist;  -- lets '=' work inside GiST
+
+CREATE TABLE bookings (
+  id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  room_id int       NOT NULL,
+  during  tstzrange NOT NULL,
+
+  EXCLUDE USING gist (room_id WITH =, during WITH &amp;&amp;)
+);
+
+INSERT INTO bookings (room_id, during)
+VALUES (1, '[2026-05-21 09:00+00, 2026-05-21 10:00+00)');
+
+INSERT INTO bookings (room_id, during)
+VALUES (1, '[2026-05-21 09:30+00, 2026-05-21 10:30+00)');
+-- ERROR:  conflicting key value violates exclusion constraint
+--         "bookings_room_id_during_excl"
+-- SQLSTATE: 23P01</code></pre>
+    </div>
+
+    <p>The constraint is enforced by a GiST index in the background — see <a href="indexes.html">Indexes</a> for the index side of the story. Outside ranges, exclusion constraints handle geometric non-overlap (no two polygons touching), interval-tree problems, and any "no two rows are in conflict by <em>X</em>" rule you would otherwise have written a flaky trigger for.</p>
+
+    <div class="callout note">
+      <span class="callout-label">Why not a trigger?</span>
+      <p>Triggers can implement non-overlap rules — and almost every implementation people write is subtly broken under concurrency. Two transactions checking "does an overlapping booking exist?" in parallel both see no conflict, both insert, and you have a double-booking. <code>EXCLUDE</code> is enforced through the index in the same code path as <code>UNIQUE</code>: atomic, race-free, and declared, not coded.</p>
+    </div>
   </section>
 
   <section>
     <h2><code>NOT NULL</code> and defaults</h2>
+
+    <p>The cheapest, highest-leverage constraint in the catalog — and the one that requires the most care to add to an existing big table. Every nullable column is a small tax on every query that touches it: three-valued logic propagates through every predicate (see <a href="data-types-and-null.html">Data types &amp; NULL</a>), <code>NOT IN</code> traps wait quietly, and joins on nullable keys behave in ways that surprise newcomers.</p>
+
+    <div class="example">
+      <p class="caption">A nullable column changes an aggregate</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE t (id int, score int);
+INSERT INTO t VALUES (1, 80), (2, NULL), (3, 90);
+
+SELECT count(*)   AS rows,
+       count(score) AS scored,
+       avg(score) AS mean
+FROM t;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>rows</th><th>scored</th><th>mean</th></tr></thead>
+          <tbody>
+            <tr><td class="num">3</td><td class="num">2</td><td class="num">85.0000000000000000</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The mean is 85, not 56.67 — Postgres correctly skipped the NULL, but the reader may not have wanted that. Every aggregate, every <code>WHERE</code>, every <code>JOIN ON</code> across that column has to make a similar decision. The simplest fix is the strongest one: make the column <code>NOT NULL</code> if the data permits, with a sensible default.</p>
+
+    <h3>Defaults</h3>
+
+    <p>A default fills in a value when the column is omitted from <code>INSERT</code>. Defaults are evaluated <em>per row at insert time</em>, not once per statement, so volatile defaults like <code>now()</code> and <code>gen_random_uuid()</code> produce a fresh value for each row. Constant defaults (<code>0</code>, <code>'pending'</code>, <code>false</code>) cost nothing — since PG 11 they're stored as metadata and applied virtually until the column is rewritten.</p>
+
+    <div class="example">
+      <p class="caption">Common default idioms</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE events (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  trace_id    uuid        NOT NULL DEFAULT gen_random_uuid(),
+  occurred_at timestamptz NOT NULL DEFAULT now(),
+  kind        text        NOT NULL DEFAULT 'unknown',
+  payload     jsonb       NOT NULL DEFAULT '{}'::jsonb
+);</code></pre>
+    </div>
+
+    <h3>Adding NOT NULL to a big table</h3>
+
+    <p>The naive command takes an <code>ACCESS EXCLUSIVE</code> lock on the table and scans every row to verify none are null. On a billion-row table that is real downtime. The two-step pattern uses a <code>CHECK</code> constraint to do the same validation under a weaker lock:</p>
+
+    <div class="example">
+      <p class="caption">Online NOT NULL addition</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- 1. Add the constraint without scanning. Brief ACCESS EXCLUSIVE on metadata
+--    only; enforces on every new INSERT/UPDATE from this moment on.
+ALTER TABLE events
+  ADD CONSTRAINT events_kind_not_null
+  CHECK (kind IS NOT NULL) NOT VALID;
+
+-- 2. Scan the existing rows under SHARE UPDATE EXCLUSIVE — reads and writes
+--    proceed in parallel.
+ALTER TABLE events
+  VALIDATE CONSTRAINT events_kind_not_null;
+
+-- 3. (PG 12+) Promote to a real NOT NULL. The planner uses the validated
+--    CHECK to skip a second scan; the operation is metadata-only.
+ALTER TABLE events
+  ALTER COLUMN kind SET NOT NULL;
+
+ALTER TABLE events
+  DROP CONSTRAINT events_kind_not_null;   -- redundant once SET NOT NULL stuck</code></pre>
+    </div>
+
+    <p>The pattern is the same as the online foreign-key addition above: <code>NOT VALID</code> to start enforcing on new rows immediately, then <code>VALIDATE</code> to mop up the existing ones without holding the strong lock. This is the central pattern of online schema change in Postgres; the next section is dedicated to it.</p>
+
+    <aside class="marginalia">
+      <span class="label">Why two steps</span>
+      <code>NOT VALID</code> means "valid going forward, possibly violated by old rows." <code>VALIDATE</code> means "scan the old rows and confirm." Splitting them lets you absorb the cheap operation under a strong lock and the expensive one under a weak lock — the opposite of the naive single command.
+    </aside>
   </section>
 
   <section>
     <h2>Generated columns</h2>
+
+    <p>A <strong>generated column</strong> is a column whose value is derived from other columns in the same row, computed by the database at insert and update time. The expression is part of the schema; the value is not a thing the application writes. The syntax is <code>GENERATED ALWAYS AS (expr) STORED</code>.</p>
+
+    <div class="example">
+      <p class="caption">A denormalised total, indexed and queryable</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE order_lines (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  unit_price  numeric(12, 2) NOT NULL CHECK (unit_price &gt;= 0),
+  qty         int            NOT NULL CHECK (qty &gt; 0),
+  line_total  numeric(14, 2) GENERATED ALWAYS AS (unit_price * qty) STORED
+);
+
+CREATE INDEX order_lines_big ON order_lines (line_total) WHERE line_total &gt; 1000;
+
+INSERT INTO order_lines (unit_price, qty) VALUES (19.99, 3) RETURNING *;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>id</th><th>unit_price</th><th>qty</th><th>line_total</th></tr></thead>
+          <tbody>
+            <tr><td class="num">1</td><td class="num">19.99</td><td class="num">3</td><td class="num">59.97</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>Three rules constrain the expression: it must be deterministic (no <code>now()</code>, no <code>random()</code>, no volatile functions), it may reference only columns in the same row (no subqueries, no other tables), and it cannot reference other generated columns. Attempts to <code>INSERT</code> or <code>UPDATE</code> the column directly raise an error — the only way to change <code>line_total</code> is to change <code>unit_price</code> or <code>qty</code>.</p>
+
+    <p>Postgres only implements the <code>STORED</code> variant. The SQL standard also defines <code>VIRTUAL</code> generated columns (computed on read, not stored on disk), and Postgres parses the keyword but rejects it. If you want virtual semantics, write a regular column-less <code>VIEW</code>.</p>
+
+    <p>Common uses where generated columns earn their keep:</p>
+
+    <dl class="kv">
+      <dt>Search vectors</dt>
+      <dd><code>tsvector</code> generated from a concatenation of text columns — the search column is always in sync with its sources, no triggers required. See <a href="full-text-search.html">Full-text search</a>.</dd>
+      <dt>Normalised lowercase forms</dt>
+      <dd><code>email_lower text GENERATED ALWAYS AS (lower(email)) STORED</code> for case-insensitive unique constraints and lookups.</dd>
+      <dt>Denormalised aggregates</dt>
+      <dd>Per-row totals, durations (<code>ends_at - starts_at</code>), JSON path extracts pulled into a typed column for indexing.</dd>
+    </dl>
   </section>
 
   <section>
     <h2>Safe vs locking <code>ALTER TABLE</code></h2>
+
+    <p>Every <code>ALTER TABLE</code> takes a lock. The question is <em>which</em> lock and for <em>how long</em>. <code>ACCESS EXCLUSIVE</code> — the strongest — blocks every concurrent reader and writer, including a one-row <code>SELECT</code>; holding it for ten seconds on a busy production table is ten seconds of stalled application traffic. The art of online schema change is doing the same logical operation without holding <code>ACCESS EXCLUSIVE</code> while the table is scanned.</p>
+
+    <p>The general patterns:</p>
+
+    <div class="data-table">
+      <p class="caption">Common operations and what they actually lock</p>
+      <table class="data">
+        <thead><tr><th>Operation</th><th>Lock</th><th>Cost</th></tr></thead>
+        <tbody>
+          <tr><td><code>ADD COLUMN</code>, nullable, no default</td><td>ACCESS EXCLUSIVE (brief)</td><td>Metadata-only since PG 11. Instant.</td></tr>
+          <tr><td><code>ADD COLUMN … DEFAULT &lt;constant&gt;</code></td><td>ACCESS EXCLUSIVE (brief)</td><td>Metadata-only since PG 11; default applied virtually until rewrite.</td></tr>
+          <tr><td><code>ADD COLUMN … DEFAULT &lt;volatile&gt;</code></td><td>ACCESS EXCLUSIVE (long)</td><td>Rewrites the entire table. Avoid; add the column nullable, backfill in batches, then <code>SET NOT NULL</code>.</td></tr>
+          <tr><td><code>DROP COLUMN</code></td><td>ACCESS EXCLUSIVE (brief)</td><td>Metadata-only. Storage reclaimed by future <code>VACUUM FULL</code> or rewrite.</td></tr>
+          <tr><td><code>ALTER COLUMN TYPE</code></td><td>ACCESS EXCLUSIVE (long)</td><td>Usually rewrites the table; rewrites the indexes. <code>varchar(n) → text</code> and similar same-binary conversions are metadata-only.</td></tr>
+          <tr><td><code>CREATE INDEX</code></td><td>SHARE</td><td>Blocks writes; allows reads. Long on big tables.</td></tr>
+          <tr><td><code>CREATE INDEX CONCURRENTLY</code></td><td>SHARE UPDATE EXCLUSIVE</td><td>Allows reads <em>and</em> writes. Two table scans; longer overall.</td></tr>
+          <tr><td><code>ADD FK / CHECK</code> + <code>NOT VALID</code></td><td>ACCESS EXCLUSIVE (brief)</td><td>Enforces on new rows immediately; pre-existing rows skipped.</td></tr>
+          <tr><td><code>VALIDATE CONSTRAINT</code></td><td>SHARE UPDATE EXCLUSIVE</td><td>Scans existing rows; allows reads and writes.</td></tr>
+          <tr><td><code>SET NOT NULL</code></td><td>ACCESS EXCLUSIVE</td><td>Brief if a validated <code>CHECK (col IS NOT NULL)</code> already exists (PG 12+); otherwise a full scan under the strong lock.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The recurring move is to split a single operation into two halves: a fast metadata change under <code>ACCESS EXCLUSIVE</code>, and a slow scan under a lighter lock that allows the application to keep running.</p>
+
+    <h3><code>CREATE INDEX CONCURRENTLY</code></h3>
+
+    <p>Building an index under the default <code>SHARE</code> lock blocks every writer for the duration of the build. <code>CONCURRENTLY</code> uses a weaker <code>SHARE UPDATE EXCLUSIVE</code> lock that allows reads <em>and</em> writes to proceed. The trade-offs are real: two passes over the table instead of one (slower overall), no other DDL can run on the table at the same time, and the operation cannot run inside a transaction block.</p>
+
+    <div class="example">
+      <p class="caption">Online index build, with cleanup if it fails</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX CONCURRENTLY orders_customer_idx ON orders (customer_id);
+
+-- If the build is interrupted, the index exists but is marked INVALID and
+-- the planner will not use it. Find and drop the corpse before retrying:
+SELECT c.relname
+FROM   pg_index i
+JOIN   pg_class c ON c.oid = i.indexrelid
+WHERE  NOT i.indisvalid;
+
+DROP INDEX CONCURRENTLY orders_customer_idx;
+CREATE INDEX CONCURRENTLY orders_customer_idx ON orders (customer_id);</code></pre>
+    </div>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Pitfall</span>
+      <p>Always set a short <code>lock_timeout</code> before running production DDL: <code>SET lock_timeout = '2s';</code>. Without it, an <code>ALTER TABLE</code> that can't immediately acquire <code>ACCESS EXCLUSIVE</code> queues behind whatever long-running query holds a lighter lock — and every subsequent query on the table queues behind <em>your</em> waiting DDL. One slow analytic <code>SELECT</code> plus one unguarded <code>ALTER TABLE</code> is enough to take down a hot table for ten minutes. A short <code>lock_timeout</code> turns the failure mode from "outage" into "migration retry."</p>
+    </div>
   </section>
 
   <div class="cheat-sheet">

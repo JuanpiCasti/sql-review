@@ -36,30 +36,383 @@
 
   <section>
     <h2>The type hierarchy at a glance</h2>
+
+    <p>Postgres ships with a dense built-in type system organised into a handful of families. Most schemas only ever use a small subset, but knowing the families is what lets you pick the right one without thinking about it.</p>
+
+    <div class="data-table">
+      <p class="caption">The families and their everyday members</p>
+      <table class="data">
+        <thead><tr><th>Family</th><th>Members</th><th>What it's for</th></tr></thead>
+        <tbody>
+          <tr><td>Numeric</td><td><code>smallint</code>, <code>int</code>, <code>bigint</code>, <code>numeric</code>, <code>real</code>, <code>double precision</code></td><td>Counts, identifiers, money, measurements.</td></tr>
+          <tr><td>Character</td><td><code>text</code>, <code>varchar</code>, <code>char</code></td><td>Free-form strings. <code>text</code> by default.</td></tr>
+          <tr><td>Date/time</td><td><code>timestamptz</code>, <code>timestamp</code>, <code>date</code>, <code>time</code>, <code>interval</code></td><td>Points in time and durations.</td></tr>
+          <tr><td>Boolean</td><td><code>boolean</code></td><td>Three-valued truth.</td></tr>
+          <tr><td>UUID</td><td><code>uuid</code></td><td>128-bit opaque identifiers.</td></tr>
+          <tr><td>Enumerated</td><td><code>CREATE TYPE … AS ENUM</code></td><td>Closed sets of named values.</td></tr>
+          <tr><td>JSON</td><td><code>jsonb</code>, <code>json</code></td><td>Semi-structured documents.</td></tr>
+          <tr><td>Network</td><td><code>inet</code>, <code>cidr</code>, <code>macaddr</code></td><td>IP addresses, subnets, MACs.</td></tr>
+          <tr><td>Geometric</td><td><code>point</code>, <code>line</code>, <code>polygon</code></td><td>2D geometry (PostGIS for real GIS).</td></tr>
+          <tr><td>Arrays</td><td><code>int[]</code>, <code>text[]</code>, …</td><td>Ordered collections of one element type.</td></tr>
+          <tr><td>Ranges</td><td><code>int4range</code>, <code>tstzrange</code>, …</td><td>Intervals over an orderable type.</td></tr>
+          <tr><td>Composite &amp; domain</td><td><code>CREATE TYPE</code>, <code>CREATE DOMAIN</code></td><td>Named records and constrained aliases.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The rest of this chapter focuses on the ones that hurt people: the numerics, the text trio, the two timestamps, arrays and ranges, booleans, UUIDs, enums, and the constant background presence of <code>NULL</code>.</p>
   </section>
 
   <section>
     <h2>Numerics — <code>numeric</code>, <code>bigint</code>, <code>float8</code></h2>
+
+    <p>Three numeric types cover almost every use case in practice, and the choice between them is a three-way trade-off between <em>exact</em>, <em>fast</em>, and <em>compact</em>. Pick wrong and you either lose precision or pay for it in storage and CPU.</p>
+
+    <dl class="kv">
+      <dt><code>bigint</code></dt>
+      <dd>Eight-byte signed integer, range ±9.2 × 10<sup>18</sup>. The default for counts and identifiers. <code>int</code> (4 bytes, ±2.1 × 10<sup>9</sup>) is fine until it isn't; <code>bigint</code> from day one costs nothing measurable and saves a painful migration later.</dd>
+      <dt><code>numeric(p, s)</code></dt>
+      <dd>Arbitrary-precision decimal. <em>p</em> total digits, <em>s</em> after the point. Exact arithmetic — what you get is what you stored. Slow (software, not hardware) and variably sized on disk. The right type for money, billing, anything that has to add up to the last cent.</dd>
+      <dt><code>double precision</code> (a.k.a. <code>float8</code>)</dt>
+      <dd>IEEE 754 binary double. Fast, fixed 8 bytes, and lossy — most decimal fractions cannot be represented exactly. Right for scientific measurements where the inputs are themselves approximations. Wrong for money.</dd>
+    </dl>
+
+    <p>The classic demonstration of why <code>float8</code> is not a stand-in for decimal:</p>
+
+    <div class="example">
+      <p class="caption">IEEE 754 rounding vs. exact decimal</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT 0.1::float8 + 0.2::float8  AS as_float,
+       0.1::numeric + 0.2::numeric AS as_numeric;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>as_float</th><th>as_numeric</th></tr></thead>
+          <tbody>
+            <tr><td class="num">0.30000000000000004</td><td class="num">0.3</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The <code>float8</code> answer is off by one part in 10<sup>16</sup> — invisible most of the time, catastrophic when you sum a million of them or compare to a literal <code>0.3</code>. <code>numeric</code> stores the digits, not a binary approximation, and the answer is exact.</p>
+
+    <p>For surrogate primary keys, two spellings produce a self-incrementing <code>bigint</code>. The legacy <code>bigserial</code> macro is shorthand for "create a sequence, set the default to <code>nextval</code>, and own it." The SQL-standard form is <code>bigint GENERATED ALWAYS AS IDENTITY</code>, which is harder to accidentally override and easier to manage explicitly. New code should prefer it; you'll see <code>bigserial</code> everywhere in older schemas.</p>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Pitfall</span>
+      <p>Never store money in <code>float8</code> or <code>real</code>. Sums drift, comparisons fail, and audits will not match. Use <code>numeric</code> — and if you want to be loud about it, <code>numeric(12, 2)</code> for cents or <code>numeric(20, 8)</code> for fractional crypto. The CPU cost of decimal arithmetic is irrelevant next to a reconciliation that's three pennies off.</p>
+    </div>
   </section>
 
   <section>
     <h2><code>text</code> vs <code>varchar</code> vs <code>char</code></h2>
+
+    <p>Three character types, and only one of them is the right default. <strong><code>text</code></strong> is unbounded variable-length and is what almost every column should be.</p>
+
+    <p><code>varchar(n)</code> is identical to <code>text</code> in storage and performance — the same variable-length on-disk format, the same TOAST handling, the same indexing — with one extra check on insert that the value is at most <em>n</em> characters. There is no efficiency reason to prefer it. Use <code>varchar(n)</code> when a real external constraint demands the limit (a fixed-width export format, a downstream column you can't widen), and use <code>text</code> otherwise.</p>
+
+    <p><code>char(n)</code> is the odd one out: it blank-pads every value to exactly <em>n</em> characters on read. This is rarely what anyone wants and it is the source of subtle join misses:</p>
+
+    <div class="example">
+      <p class="caption">Blank-padding bites a join</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE codes_a (code char(5));
+CREATE TABLE codes_b (code text);
+INSERT INTO codes_a VALUES ('AB');     -- stored and returned as 'AB   '
+INSERT INTO codes_b VALUES ('AB');
+
+SELECT length(a.code), length(b.code)
+FROM codes_a a JOIN codes_b b ON a.code = b.code;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result (the join works by a Postgres-specific quirk, but the lengths disagree)</p>
+        <table class="result">
+          <thead><tr><th>length</th><th>length</th></tr></thead>
+          <tbody>
+            <tr><td class="num">5</td><td class="num">2</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>Cross to any other system — an application string-compare, a CSV export, a different database — and the trailing spaces stop being invisible. Almost every <code>char(n)</code> in the wild is a mistake inherited from a port of fixed-width COBOL or DB2 code.</p>
+
+    <p>Large values are handled transparently. When a row would overflow a single 8 KB page, Postgres compresses and slices the wide columns into a side relation called <strong>TOAST</strong>. You never see this from SQL — a megabyte of <code>text</code> reads and writes like any other value — but it explains why a single column can hold a gigabyte without anything in your schema looking different.</p>
+
+    <aside class="marginalia">
+      <span class="label">Collation</span>
+      Every text column has a collation that controls sorting and pattern matching. <code>COLLATE "en_US.utf8"</code> sorts naturally ("apple" &lt; "Banana"); <code>COLLATE "C"</code> sorts by raw byte order ("Banana" &lt; "apple") and is what you want for an indexed column you compare with <code>=</code> or <code>LIKE 'prefix%'</code>. Mismatched collations across columns force a re-encode and can defeat index usage.
+    </aside>
   </section>
 
   <section>
     <h2><code>timestamptz</code> vs <code>timestamp</code></h2>
+
+    <p>This is the highest-value section in the chapter. Pick wrong and your application silently misreports times for every user not in the database server's local zone; pick right and the problem disappears forever.</p>
+
+    <p><strong><code>timestamptz</code></strong> (<code>timestamp with time zone</code>) stores a <em>UTC instant</em>. On insert, the literal is interpreted in the session's <code>TIMEZONE</code> and converted to UTC; on read, the UTC instant is converted back to the session's zone for display. The column itself stores <em>no</em> zone — just 8 bytes counting microseconds from the Postgres epoch. The name is misleading: there is no zone <em>in</em> the value.</p>
+
+    <p><code>timestamp</code> (<code>timestamp without time zone</code>) stores a wall-clock string of digits with no zone attached and no conversion performed. <code>'2026-05-21 14:00'</code> means whatever you decide it means; the database stores the digits and hands them back unchanged. This is almost always wrong, and the few cases where it is right (a calendar event that should fire at 09:00 <em>local</em> wherever the user is, regardless of zone) are usually better modelled as <code>(local_timestamp, zone_name)</code>.</p>
+
+    <div class="example">
+      <p class="caption">The same INSERT in two zones</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE ev (kind text, tz timestamptz, no_tz timestamp);
+
+SET TIMEZONE = 'UTC';
+INSERT INTO ev VALUES ('utc-write', '2026-05-21 14:00', '2026-05-21 14:00');
+
+SET TIMEZONE = 'America/New_York';   -- UTC-4 on this date
+INSERT INTO ev VALUES ('ny-write',  '2026-05-21 14:00', '2026-05-21 14:00');
+
+SELECT * FROM ev;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result (session still <code>America/New_York</code>)</p>
+        <table class="result">
+          <thead><tr><th>kind</th><th>tz</th><th>no_tz</th></tr></thead>
+          <tbody>
+            <tr><td>utc-write</td><td>2026-05-21 10:00:00-04</td><td>2026-05-21 14:00:00</td></tr>
+            <tr><td>ny-write</td> <td>2026-05-21 14:00:00-04</td><td>2026-05-21 14:00:00</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The two <code>timestamptz</code> rows store different UTC instants (14:00 UTC vs 18:00 UTC) because the input was interpreted in different zones; the display zone is the session's. The two <code>timestamp</code> rows are byte-for-byte identical despite having been written under different zones — the database simply did not care. That is the bug.</p>
+
+    <p>Three "now" functions, three subtly different meanings:</p>
+
+    <dl class="kv">
+      <dt><code>now()</code> / <code>transaction_timestamp()</code></dt>
+      <dd>The moment the current <em>transaction</em> began. Constant for the life of the transaction — call it ten times, get the same answer ten times.</dd>
+      <dt><code>statement_timestamp()</code></dt>
+      <dd>The moment the current <em>statement</em> began. Advances between statements in the same transaction.</dd>
+      <dt><code>clock_timestamp()</code></dt>
+      <dd>The actual wall clock, read fresh each call. The only one that moves inside a single statement. Useful for measuring time inside a long query; never use it as a default for "when did this row land."</dd>
+    </dl>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Pitfall</span>
+      <p>Comparing a <code>timestamptz</code> column to a bare string literal like <code>'2026-05-21 00:00'</code> implicitly casts the literal using the session's <code>TIMEZONE</code>. The same query run from a server in UTC and an analyst's laptop in Lisbon returns different rows. Either set <code>TIMEZONE</code> explicitly in your session, or write zone-qualified literals: <code>'2026-05-21 00:00 UTC'::timestamptz</code>.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><code>boolean</code></h2>
+
+    <p>One byte on disk, three possible values: <code>true</code>, <code>false</code>, and <code>NULL</code>. The third one is what trips people up — every nullable boolean column is a three-valued column, and ordinary boolean operators propagate the unknown.</p>
+
+    <p>Two queries that look equivalent and are not:</p>
+
+    <div class="example">
+      <p class="caption">Boolean filters with NULLs in the column</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE users (id int, active boolean);
+INSERT INTO users VALUES (1, true), (2, false), (3, NULL);
+
+SELECT count(*) FILTER (WHERE NOT active)      AS not_active,
+       count(*) FILTER (WHERE active IS NOT TRUE) AS not_true,
+       count(*) FILTER (WHERE active = FALSE)  AS eq_false
+FROM users;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>not_active</th><th>not_true</th><th>eq_false</th></tr></thead>
+          <tbody>
+            <tr><td class="num">1</td><td class="num">2</td><td class="num">1</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p><code>NOT active</code> and <code>active = FALSE</code> both quietly drop the <code>NULL</code> row, because the predicate evaluates to <code>NULL</code> and <code>WHERE</code> treats <code>NULL</code> as false. <code>active IS NOT TRUE</code> is the predicate that catches both <em>false</em> and <em>unknown</em> — usually what the question "who is not active?" actually means. Make the column <code>NOT NULL DEFAULT FALSE</code> if you can; if you can't, write your predicates with <code>IS [NOT] TRUE/FALSE</code> and not bare boolean operators.</p>
+  </section>
+
+  <section>
+    <h2><code>uuid</code></h2>
+
+    <p>A fixed 16-byte identifier, displayed as the familiar 8-4-4-4-12 hex string. Half the byte cost of storing the same value as <code>text</code>, and the right type any time you need an identifier that can be generated by a client without coordinating with the database.</p>
+
+    <p>Since Postgres 13, version-4 UUIDs are a one-function call in core — no extension required:</p>
+
+    <div class="example">
+      <p class="caption">UUID column with a built-in default</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE sessions (
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    bigint NOT NULL,
+  started_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO sessions (user_id) VALUES (42) RETURNING id;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>id</th></tr></thead>
+          <tbody>
+            <tr><td>9e2c5f7a-1b3d-4e6f-8a2b-7c1d3e5f9a04</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The trade-off against <code>bigint</code> identity is twofold. UUIDs are twice the size — measurable in indexes and join keys on hot tables — and version-4 values are random, so every insert lands in a different B-tree page. That spreads write traffic across the index instead of concentrating it at the tail, which is bad for cache locality and bloat. For a high-throughput write workload on a single database, an identity <code>bigint</code> is cheaper. For distributed systems, opaque external IDs, or anywhere the client must mint the ID before talking to the database, the UUID is correct.</p>
+
+    <aside class="marginalia">
+      <span class="label">UUIDv7</span>
+      The fix for the locality problem is <strong>UUIDv7</strong> — 128 bits, but with a millisecond timestamp in the high bits so values are roughly time-ordered. Available today via extensions (<code>pg_uuidv7</code>) and on the roadmap for core. If you're starting a new schema, it's worth a look.
+    </aside>
   </section>
 
   <section>
     <h2>Arrays and ranges</h2>
+
+    <p>Two collection types that share a syntax family and almost nothing else. Arrays are first-class and frequently misused. Ranges are powerful, underused, and the cleanest way to model intervals.</p>
+
+    <h3>Arrays</h3>
+
+    <p>Any type can be made into an array by suffixing <code>[]</code>. Arrays support equality, containment (<code>@&gt;</code>), overlap (<code>&amp;&amp;</code>), and a GIN index for O(log n) lookups by element. They're genuinely useful for short, append-only lists where the order matters and you'll never need to join — tag lists for full-text search, ordered path components, the small fixed vector of a denormalised cache.</p>
+
+    <div class="example">
+      <p class="caption">Array column with a GIN index</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE posts (
+  id   bigserial PRIMARY KEY,
+  tags text[] NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX posts_tags_gin ON posts USING gin (tags);
+
+SELECT id FROM posts WHERE tags @&gt; ARRAY['postgres', 'mvcc'];</code></pre>
+    </div>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Pitfall</span>
+      <p>An array column is not a relationship. Storing <code>tag_ids int[]</code> instead of a <code>post_tags(post_id, tag_id)</code> join table loses every benefit a join table gives you: foreign-key enforcement on each ID, ordinary B-tree indexes for "all posts with tag X", efficient many-to-many joins, and the ability to add columns to the relationship itself (when the tag was added, by whom). If the application ever needs to ask "show me all posts tagged X, joined with the tag's metadata" the array model collapses.</p>
+    </div>
+
+    <h3>Ranges</h3>
+
+    <p>A range is a single column holding a lower and upper bound over an orderable type, with explicit inclusivity. Built-in range types include <code>int4range</code>, <code>numrange</code>, <code>tsrange</code>, <code>tstzrange</code>, and <code>daterange</code>. They support containment (<code>@&gt;</code>), overlap (<code>&amp;&amp;</code>), adjacency (<code>-|-</code>), and — crucially — pair with <code>EXCLUDE</code> constraints to enforce non-overlap at the database level.</p>
+
+    <div class="example">
+      <p class="caption">Reservations that cannot overlap</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE EXTENSION IF NOT EXISTS btree_gist;  -- so '=' on room_id works in GiST
+
+CREATE TABLE bookings (
+  id      bigserial PRIMARY KEY,
+  room_id int NOT NULL,
+  during  tstzrange NOT NULL,
+  EXCLUDE USING gist (room_id WITH =, during WITH &amp;&amp;)
+);
+
+INSERT INTO bookings (room_id, during)
+VALUES (1, '[2026-05-21 09:00+00, 2026-05-21 10:00+00)');
+
+INSERT INTO bookings (room_id, during)
+VALUES (1, '[2026-05-21 09:30+00, 2026-05-21 10:30+00)');
+-- ERROR:  conflicting key value violates exclusion constraint
+--         "bookings_room_id_during_excl"</code></pre>
+    </div>
+
+    <p>The constraint is enforced by the database, atomically, without a trigger and without a race. The full <code>EXCLUDE</code> story lives in <a href="schema-and-constraints.html">Schema design &amp; constraints</a>.</p>
+  </section>
+
+  <section>
+    <h2>Enums and composite types</h2>
+
+    <p>An <code>ENUM</code> is a closed set of named string values stored on disk as a 4-byte oid. Cheap, ordered (by declaration order, not alphabetical), and statically typed — assigning a string outside the set is a parse error, not a runtime check.</p>
+
+    <div class="example">
+      <p class="caption">Enum for a fixed status column</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TYPE order_status AS ENUM ('pending', 'paid', 'shipped', 'cancelled');
+
+CREATE TABLE orders (
+  id     bigserial PRIMARY KEY,
+  status order_status NOT NULL DEFAULT 'pending'
+);
+
+SELECT * FROM orders WHERE status &lt; 'shipped';  -- uses declaration order</code></pre>
+    </div>
+
+    <p>The catch is evolution. <code>ALTER TYPE … ADD VALUE</code> works (and since PG 12 can be run outside a transaction block), but you cannot remove a value, you cannot reorder, and renaming requires <code>ALTER TYPE … RENAME VALUE</code>. For a set that changes monthly, a <code>text</code> column with a <code>CHECK (status IN (…))</code> constraint — or a <code>statuses</code> lookup table with an FK — is more flexible. For a set that's stable for years (US states, ISO currency, the four sides of a coin), an enum is the right choice and reads beautifully in queries.</p>
+
+    <p>Composite types are the other half of <code>CREATE TYPE</code>: a named record shape, useful for function return values and occasionally for columns that genuinely model a tuple (a postal address, an RGB colour). They're rare in application schemas and common in extension code.</p>
   </section>
 
   <section>
     <h2>NULL, three-valued logic, <code>IS DISTINCT FROM</code></h2>
+
+    <p>The conceptual heart of the chapter. <strong><code>NULL</code></strong> is not a value; it is the absence of one. The slogan is "<em>unknown</em>." Every comparison involving <code>NULL</code> evaluates to <code>NULL</code> — not true, not false, unknown — and <code>WHERE</code>, <code>CASE</code>, and <code>HAVING</code> all treat <code>NULL</code> as if it were false. From this one rule, all the surprises follow.</p>
+
+    <div class="example">
+      <p class="caption">Why <code>= NULL</code> never matches</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE t (id int, val int);
+INSERT INTO t VALUES (1, 10), (2, NULL), (3, 20);
+
+SELECT * FROM t WHERE val = NULL;       -- returns zero rows
+SELECT * FROM t WHERE val IS NULL;      -- returns the row with id=2
+SELECT * FROM t WHERE val IS NOT DISTINCT FROM NULL;  -- same: id=2</code></pre>
+    </div>
+
+    <p><code>val = NULL</code> evaluates to <code>NULL</code> for every row including the one where <code>val</code> actually is null; <code>WHERE NULL</code> filters that row out. <code>IS NULL</code> is the only equality test that treats two nulls as equal. <code>IS DISTINCT FROM</code> is its sibling: a null-safe inequality that returns <code>true</code> when one side is null and the other isn't, and <code>false</code> when both are null. It is the equality you actually wanted across nullable columns:</p>
+
+    <div class="example">
+      <p class="caption">Comparing nullable columns sensibly</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- "did this row change?" against an audit table
+SELECT *
+FROM   current c
+JOIN   previous p USING (id)
+WHERE  c.email IS DISTINCT FROM p.email
+   OR  c.phone IS DISTINCT FROM p.phone;</code></pre>
+    </div>
+
+    <p>Three more places NULL behaviour bites:</p>
+
+    <dl class="kv">
+      <dt><code>NOT IN (subquery)</code></dt>
+      <dd>If the subquery ever yields a single <code>NULL</code>, the entire <code>NOT IN</code> evaluates to <code>NULL</code> for every outer row, and the outer query returns zero rows. <code>NOT EXISTS</code> is the safe rewrite.</dd>
+      <dt>Aggregates</dt>
+      <dd><code>COUNT(*)</code> counts rows; <code>COUNT(col)</code> counts non-null values of <em>col</em>. <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code> all skip nulls. <code>AVG</code> over an all-null group returns <code>NULL</code>, not zero.</dd>
+      <dt><code>UNIQUE</code> constraints</dt>
+      <dd>By default, two <code>NULL</code>s are not considered equal, so a <code>UNIQUE</code> column happily accepts many rows with <code>NULL</code> in it. <code>UNIQUE NULLS NOT DISTINCT</code> (PG 15+) flips this. See <a href="schema-and-constraints.html">Schema design &amp; constraints</a>.</dd>
+    </dl>
+
+    <div class="callout warning">
+      <span class="callout-label">Warning</span>
+      <p><code>SELECT * FROM orders WHERE id NOT IN (SELECT order_id FROM shipments)</code> looks reasonable. If a single row in <code>shipments.order_id</code> is <code>NULL</code>, the query silently returns nothing — every order looks "not shipped" because <code>id NOT IN (…, NULL, …)</code> can never be proven true. Use <code>NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = orders.id)</code> instead, which has the obvious semantics.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><code>json</code> vs <code>jsonb</code> — a pointer</h2>
+
+    <p>Two JSON types, and one of them is the right default. <strong><code>jsonb</code></strong> stores a parsed, decomposed binary representation: insert is slightly more expensive (validation + decompose), every read is faster, and the value supports operator-class indexing with GIN. <code>json</code> stores the original text verbatim, preserving whitespace and key order; every operation re-parses. Use <code>json</code> only when you genuinely need to round-trip the bytes a client sent you. Otherwise, <code>jsonb</code>. The full chapter lives at <a href="jsonb.html">JSONB</a>.</p>
   </section>
 
   <section>
     <h2>Domains and custom types</h2>
+
+    <p>A <strong>domain</strong> is a named alias for an existing type, optionally wrapped in a <code>CHECK</code> constraint and a default. It lets you give a column shape a name — "an email," "a positive amount," "a US ZIP code" — and reuse it across tables with the validation applied automatically.</p>
+
+    <div class="example">
+      <p class="caption">A domain for email addresses</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE DOMAIN email AS text
+  CHECK (VALUE ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$');
+
+CREATE TABLE accounts (
+  id       bigserial PRIMARY KEY,
+  primary_email   email NOT NULL,
+  recovery_email  email
+);
+
+INSERT INTO accounts (primary_email) VALUES ('not-an-email');
+-- ERROR:  value for domain email violates check constraint "email_check"
+-- SQLSTATE: 23514</code></pre>
+    </div>
+
+    <p>The same regex repeated across three tables is three places a typo can land. The domain is one place, one definition, one rule. Changing the rule (<code>ALTER DOMAIN … ADD CONSTRAINT … NOT VALID</code>) revalidates only the rows that need it.</p>
+
+    <p>Domains cannot enforce <em>inter-column</em> rules — they see one value at a time, not the row — so "<code>ends_at</code> must be after <code>starts_at</code>" still belongs in a table-level <code>CHECK</code>. And a domain does not give you a new type for the purposes of function overloading; it is the underlying type with a label. Even so: under-used, low-cost, and clarifying when applied to a column shape you find yourself defining more than once.</p>
+
+    <aside class="marginalia">
+      <span class="label">In practice</span>
+      Domains show up rarely in application schemas and constantly in well-built extensions. They are one of the easiest wins for a schema you intend to live with for years.
+    </aside>
   </section>
 
   <div class="cheat-sheet">
@@ -67,13 +420,19 @@
     <dl>
       <dt><code>numeric</code></dt>      <dd>Exact arbitrary-precision. Use for money.</dd>
       <dt><code>float8</code></dt>       <dd>IEEE 754 double. Fast, lossy. Never for money.</dd>
-      <dt><code>text</code></dt>         <dd>The right default. <code>varchar(n)</code> only when an external system imposes the limit.</dd>
+      <dt><code>bigint</code></dt>       <dd>The right default integer. Prefer <code>GENERATED ALWAYS AS IDENTITY</code> over <code>bigserial</code> in new code.</dd>
+      <dt><code>text</code></dt>         <dd>The right default. <code>varchar(n)</code> only when an external system imposes the limit. <code>char(n)</code> almost never.</dd>
       <dt><code>timestamptz</code></dt>  <dd>UTC instant. The right default for "when did this happen."</dd>
       <dt><code>timestamp</code></dt>    <dd>Wall-clock with no zone. Almost always wrong.</dd>
+      <dt><code>boolean</code></dt>      <dd>Three-valued. Prefer <code>NOT NULL DEFAULT FALSE</code>; write <code>IS NOT TRUE</code> when nulls are possible.</dd>
+      <dt><code>uuid</code></dt>         <dd>16 bytes, <code>gen_random_uuid()</code> built in since PG 13. Worse index locality than identity bigints; UUIDv7 is the fix.</dd>
       <dt><code>NULL</code></dt>         <dd>"Unknown." <code>NULL = NULL</code> is <code>NULL</code>, not true.</dd>
       <dt><code>IS DISTINCT FROM</code></dt><dd>The equality you actually wanted across nullable columns.</dd>
       <dt>Arrays</dt>                    <dd><code>int[]</code>, <code>text[]</code>. GIN-indexable. Don't model relations with them.</dd>
       <dt>Ranges</dt>                    <dd><code>tstzrange</code>, <code>int4range</code>. Pair with <code>EXCLUDE</code> for non-overlap constraints.</dd>
+      <dt><code>ENUM</code></dt>         <dd>Closed sets, cheap and ordered. Hard to evolve — use <code>CHECK</code> or a lookup table if values churn.</dd>
+      <dt><code>jsonb</code></dt>        <dd>The right default for semi-structured data. <code>json</code> only for byte-exact round-trips.</dd>
+      <dt>Domains</dt>                   <dd>Named, reusable column shapes with a built-in CHECK. Under-used.</dd>
     </dl>
   </div>
 
@@ -84,6 +443,7 @@
       <li><a href="https://www.postgresql.org/docs/current/datatype-datetime.html">Date/Time Types</a></li>
       <li><a href="https://www.postgresql.org/docs/current/functions-comparison.html">Comparison Functions and Operators</a></li>
       <li><a href="https://www.postgresql.org/docs/current/rangetypes.html">Range Types</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/domains.html">Domain Types</a></li>
     </ul>
   </section>
 
