@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Full-text search — Postgres Study</title>
+  <meta name="description" content="tsvector, tsquery, the @@ operator, GIN indexing, trigram fuzzy match, and when to reach for Elasticsearch instead.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="full-text-search.html" aria-current="page">VIII · Full-text search</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">08</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter VIII · Querying</span>
+      <h1>Full-text search, <em>or, <code>LIKE '%foo%'</code> considered harmful</em></h1>
+      <p class="standfirst">A search engine inside the database — stemming, ranking, phrase queries, and a GIN index that turns a sequential scan of millions of documents into a few milliseconds.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">Postgres ships with a credible full-text engine: tokenisers for two dozen languages, configurable stemmers, phrase and proximity operators, and a ranking function. For the search bar on a moderately busy app, it is almost always enough — and it spares you the operational cost of running a second datastore. This chapter covers what's in the box.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 8.1</span> <code>tsvector</code> and <code>tsquery</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 8.2</span> Dictionaries, stemmers, configurations</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 8.3</span> <code>@@</code> and ranking with <code>ts_rank</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 8.4</span> GIN-indexing a <code>tsvector</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 8.5</span> Trigram (<code>pg_trgm</code>) fuzzy match</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 8.6</span> When to reach for an external engine</h2>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Full-text search, in one card</h3>
+    <dl>
+      <dt><code>to_tsvector(cfg, text)</code></dt><dd>Tokenise + stem text into a sorted lexeme list.</dd>
+      <dt><code>to_tsquery(cfg, q)</code></dt>   <dd>Parse a query into <code>&amp;</code> / <code>|</code> / <code>!</code> / <code>&lt;-&gt;</code> tree.</dd>
+      <dt><code>plainto_tsquery</code></dt>      <dd>Treat input as plain text, AND the terms.</dd>
+      <dt><code>websearch_to_tsquery</code></dt> <dd>Google-style: quoted phrases, <code>OR</code>, <code>-exclusion</code>.</dd>
+      <dt><code>v @@ q</code></dt>               <dd>Does this <code>tsvector</code> match this <code>tsquery</code>?</dd>
+      <dt><code>ts_rank</code> / <code>ts_rank_cd</code></dt><dd>Order results by relevance.</dd>
+      <dt>GIN index</dt>                         <dd>The right index type. Build with <code>tsvector_ops</code>.</dd>
+      <dt>Stored vs expression</dt>              <dd>Store a generated <code>tsvector</code> column, or index <code>to_tsvector(...)</code>.</dd>
+      <dt><code>pg_trgm</code></dt>              <dd>Trigram similarity for fuzzy match, typo tolerance, <code>ILIKE</code> acceleration.</dd>
+      <dt>Reach for ES when</dt>                 <dd>Synonyms-per-tenant, faceting at scale, learning-to-rank, or &gt; ~100 GB index.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/textsearch.html">Full Text Search (chapter)</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/textsearch-controls.html">Controlling Text Search</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/textsearch-indexes.html">GIN and GiST Index Types</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/pgtrgm.html">pg_trgm</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="ctes.html">
+      <span class="label">← Previous</span>
+      <span class="title">VII · CTEs &amp; recursion</span>
+    </a>
+    <a class="next" href="jsonb.html">
+      <span class="label">Next →</span>
+      <span class="title">IX · JSONB</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

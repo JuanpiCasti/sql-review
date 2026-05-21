@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Locking &amp; Deadlocks — Postgres Study</title>
+  <meta name="description" content="Table lock modes, row locks, the deadlock detector, advisory locks, and SKIP LOCKED.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="locking-deadlocks.html" aria-current="page">XIII · Locking</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">13</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter XIII · Concurrency</span>
+      <h1>Locks &amp; deadlocks, <em>or, who's waiting on whom</em></h1>
+      <p class="standfirst">Eight table-lock modes, four row-lock modes, one deadlock detector. The mechanics behind every <code>blocked</code> session and every <code>40P01</code> error in production.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">MVCC means most readers don't lock and most writers don't block readers — but locks are still everywhere. They protect the structure of relations from concurrent DDL, serialise conflicting writes on the same row, and let you carve out application-defined critical sections with no schema at all. Knowing which lock mode each command takes, which conflict with which, and how the deadlock detector resolves the inevitable cycles is the difference between a database under control and one whose production logs scroll past too fast to read.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 13.1</span> Eight table-lock modes</h2>
+
+    <p>Every statement that touches a table takes a <em>table-level</em> lock in one of eight modes. The modes form a hierarchy from <em>weakest</em> (held by everyone, conflicts with nothing but DDL) to <em>strongest</em> (held alone, conflicts with everything).</p>
+
+    <dl class="kv">
+      <dt>ACCESS SHARE</dt>            <dd>Taken by <code>SELECT</code>. Conflicts only with <code>ACCESS EXCLUSIVE</code>.</dd>
+      <dt>ROW SHARE</dt>               <dd>Taken by <code>SELECT … FOR UPDATE</code> / <code>FOR SHARE</code>.</dd>
+      <dt>ROW EXCLUSIVE</dt>           <dd>Taken by <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>MERGE</code>.</dd>
+      <dt>SHARE UPDATE EXCLUSIVE</dt>  <dd>Taken by <code>VACUUM</code> (non-FULL), <code>ANALYZE</code>, <code>CREATE INDEX CONCURRENTLY</code>, some <code>ALTER TABLE</code>.</dd>
+      <dt>SHARE</dt>                   <dd>Taken by <code>CREATE INDEX</code> (non-concurrent).</dd>
+      <dt>SHARE ROW EXCLUSIVE</dt>     <dd>Taken by some <code>ALTER TABLE</code> forms.</dd>
+      <dt>EXCLUSIVE</dt>               <dd>Taken by <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code>.</dd>
+      <dt>ACCESS EXCLUSIVE</dt>        <dd>Taken by <code>DROP TABLE</code>, <code>TRUNCATE</code>, <code>VACUUM FULL</code>, most <code>ALTER TABLE</code>, <code>CLUSTER</code>. Conflicts with everything — even <code>SELECT</code>.</dd>
+    </dl>
+
+    <aside class="marginalia">
+      <span class="label">Why the names</span>
+      "Share" / "Exclusive" describe whether the lock can be co-held with others of the same mode. "Row" in the name means "I will modify rows" — these modes don't conflict with each other because row-level concurrency is handled by row locks, not the table lock.
+    </aside>
+
+    <p>The compatibility matrix below shows which modes conflict (■) and which can be held simultaneously by different transactions ( ).</p>
+
+    <div style="overflow-x: auto;">
+    <table class="matrix">
+      <caption>Table-lock conflict matrix · ■ = conflict</caption>
+      <thead><tr>
+        <th></th>
+        <th class="col">ACCESS SHARE</th>
+        <th class="col">ROW SHARE</th>
+        <th class="col">ROW EXCL</th>
+        <th class="col">SHARE UPD EXCL</th>
+        <th class="col">SHARE</th>
+        <th class="col">SHARE ROW EXCL</th>
+        <th class="col">EXCLUSIVE</th>
+        <th class="col">ACCESS EXCL</th>
+      </tr></thead>
+      <tbody>
+        <tr><th>ACCESS SHARE</th>   <td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="conflict">■</td></tr>
+        <tr><th>ROW SHARE</th>      <td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="conflict">■</td><td class="conflict">■</td></tr>
+        <tr><th>ROW EXCL</th>       <td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td></tr>
+        <tr><th>SHARE UPD EXCL</th> <td class="ok"></td><td class="ok"></td><td class="ok"></td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td></tr>
+        <tr><th>SHARE</th>          <td class="ok"></td><td class="ok"></td><td class="conflict">■</td><td class="conflict">■</td><td class="ok"></td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td></tr>
+        <tr><th>SHARE ROW EXCL</th> <td class="ok"></td><td class="ok"></td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td></tr>
+        <tr><th>EXCLUSIVE</th>      <td class="ok"></td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td></tr>
+        <tr><th>ACCESS EXCL</th>    <td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td><td class="conflict">■</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout pitfall">
+      <span class="callout-label">The DDL trap</span>
+      <p>Most <code>ALTER TABLE</code> forms take <code>ACCESS EXCLUSIVE</code>, which conflicts with <code>SELECT</code>. If a long-running query is reading the table when your migration runs, the migration blocks behind it — and every <em>new</em> <code>SELECT</code> queues behind the migration. A 30-second analytic query plus a one-millisecond <code>ALTER TABLE</code> can stall your entire application for 30 seconds. Set <code>lock_timeout = '2s'</code> on migrations.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 13.2</span> Four row-lock modes</h2>
+
+    <p>Inside a table, individual rows can be locked by <code>SELECT</code>. There are four row-lock strengths, from weakest to strongest:</p>
+
+    <dl class="kv">
+      <dt>FOR KEY SHARE</dt><dd>Prevents other transactions from changing the row's key columns or deleting it. Held implicitly by foreign-key checks on the parent side.</dd>
+      <dt>FOR SHARE</dt>    <dd>Prevents any update or delete; multiple sessions can hold it.</dd>
+      <dt>FOR NO KEY UPDATE</dt><dd>Same as <code>FOR UPDATE</code> but doesn't block <code>FOR KEY SHARE</code>. Taken implicitly by <code>UPDATE</code> on non-key columns.</dd>
+      <dt>FOR UPDATE</dt>   <dd>Strongest. Prevents any other lock; the row is yours to modify.</dd>
+    </dl>
+
+    <p>The two weaker modes exist because of foreign keys. An <code>INSERT</code> into a child table needs to verify the parent row exists, but should not block parallel updates to non-key columns of that parent. The KEY-aware modes carve out exactly that gap.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 13.1</span> Pessimistic locking with FOR UPDATE</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE;
+-- any concurrent UPDATE / DELETE / SELECT FOR UPDATE on this row blocks here
+
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+COMMIT;</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 13.3</span> NOWAIT and SKIP LOCKED</h2>
+
+    <p>By default, locking <code>SELECT</code>s wait. Two modifiers change that:</p>
+
+    <dl class="kv">
+      <dt>NOWAIT</dt>      <dd>Raise <code>ERROR: could not obtain lock on row</code> immediately if the row is locked.</dd>
+      <dt>SKIP LOCKED</dt> <dd>Silently omit locked rows from the result set.</dd>
+    </dl>
+
+    <p><code>SKIP LOCKED</code> is the trick that lets you build a low-contention work queue inside a Postgres table — no Redis, no SQS, just a table and a query:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 13.2</span> A work queue in nine lines</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- N workers run this in a loop, in parallel
+BEGIN;
+SELECT id, payload
+FROM jobs
+WHERE state = 'pending'
+ORDER BY priority, id
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
+
+-- ... do the work ...
+
+UPDATE jobs SET state = 'done' WHERE id = $1;
+COMMIT;</code></pre>
+    </div>
+
+    <p>Each worker grabs a different row because the rows the others already hold are skipped. No worker ever waits. The hot pages do see contention, but the rows themselves don't.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 13.4</span> Deadlocks</h2>
+
+    <p>A <strong>deadlock</strong> is a cycle: A holds X and wants Y; B holds Y and wants X. Both sit forever. Postgres detects this with a background check that runs <code>deadlock_timeout</code> (default <code>1s</code>) after any session starts waiting on a lock. If a cycle is found, Postgres picks one transaction as victim and aborts it with SQLSTATE <code>40P01</code>:</p>
+
+    <div class="sessions">
+      <div class="col-header">t</div>
+      <div class="col-header">Session A</div>
+      <div class="col-header">Session B</div>
+
+      <div class="t">t1</div>
+      <div class="a"><span class="kw">BEGIN</span>;<br><span class="kw">UPDATE</span> accounts <span class="kw">SET</span> balance = balance - 50 <span class="kw">WHERE</span> id = 1;</div>
+      <div class="b"><span class="kw">BEGIN</span>;<br><span class="kw">UPDATE</span> accounts <span class="kw">SET</span> balance = balance - 50 <span class="kw">WHERE</span> id = 2;</div>
+
+      <div class="t">t2</div>
+      <div class="a"><span class="kw">UPDATE</span> accounts <span class="kw">SET</span> balance = balance + 50 <span class="kw">WHERE</span> id = 2;<br><span class="blocked">-- waits for B</span></div>
+      <div class="b"><span class="kw">UPDATE</span> accounts <span class="kw">SET</span> balance = balance + 50 <span class="kw">WHERE</span> id = 1;<br><span class="blocked">-- waits for A — cycle</span></div>
+
+      <div class="t">t3</div>
+      <div class="a" colspan="2"></div>
+      <div class="b" style="grid-column: 2 / -1; padding-top: 0.6em;"><span class="err">After deadlock_timeout, Postgres aborts one of them:<br>ERROR: deadlock detected (SQLSTATE 40P01)</span></div>
+    </div>
+
+    <p>The prevention is mechanical: always acquire locks in a consistent order. If both transactions had touched id=1 before id=2, there would be no cycle — one would wait for the other and complete normally.</p>
+
+    <div class="callout note">
+      <span class="callout-label">The retry contract</span>
+      <p>Like serialization failures, <code>40P01</code> is a normal, expected outcome under contention. Your application must catch it and retry the entire transaction — not the failing statement. Most ORMs offer a retry decorator for exactly this.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 13.5</span> Inspecting locks</h2>
+
+    <p>The system view <code>pg_locks</code> shows every lock currently held or waiting in the cluster. Joined to <code>pg_stat_activity</code>, it becomes the answer to "what is blocking what?":</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 13.3</span> Who is blocking whom</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT blocked.pid     AS blocked_pid,
+       blocked.query   AS blocked_query,
+       blocking.pid    AS blocking_pid,
+       blocking.query  AS blocking_query,
+       blocking.state  AS blocking_state,
+       now() - blocked.xact_start AS blocked_for
+FROM pg_stat_activity blocked
+JOIN pg_stat_activity blocking
+  ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+WHERE NOT blocked.wait_event_type IS NULL;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>blocked_pid</th><th>blocking_pid</th><th>blocking_state</th><th>blocked_for</th></tr></thead>
+          <tbody>
+            <tr><td class="num">22014</td><td class="num">21887</td><td>idle in transaction</td><td>00:03:11</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>To kill the blocker:</p>
+
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT pg_cancel_backend(21887);   -- politely cancels the current query
+SELECT pg_terminate_backend(21887); -- closes the connection entirely</code></pre>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 13.6</span> Advisory locks</h2>
+
+    <p>Sometimes you need mutual exclusion that has nothing to do with rows — running a singleton cron job, serialising a leader-election protocol, gating a cache rebuild. <strong>Advisory locks</strong> are application-defined locks identified by one or two arbitrary integers, with no relation to any table.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 13.4</span> A singleton cron lock</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- one worker grabs it; the others find it taken and exit
+SELECT pg_try_advisory_lock(42) AS got_it;
+
+-- session-scoped: released on disconnect or pg_advisory_unlock(42)
+-- transaction-scoped variant releases at COMMIT/ROLLBACK:
+SELECT pg_advisory_xact_lock(42);</code></pre>
+    </div>
+
+    <dl class="kv">
+      <dt>pg_advisory_lock(n)</dt>          <dd>Wait until acquired; session-scoped.</dd>
+      <dt>pg_try_advisory_lock(n)</dt>      <dd>Non-blocking; returns boolean.</dd>
+      <dt>pg_advisory_xact_lock(n)</dt>     <dd>Wait; auto-released at end of transaction.</dd>
+      <dt>pg_advisory_unlock(n)</dt>        <dd>Release a session-scoped lock.</dd>
+    </dl>
+
+    <p>Advisory locks live in the same shared lock table as everything else and show up in <code>pg_locks</code> with <code>locktype = 'advisory'</code>.</p>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Locks, in one card</h3>
+    <dl>
+      <dt>ACCESS EXCLUSIVE</dt>   <dd>Blocks <em>everything</em>, including <code>SELECT</code>. Held by most DDL.</dd>
+      <dt>ROW EXCLUSIVE</dt>      <dd>Held by every <code>INSERT</code> / <code>UPDATE</code> / <code>DELETE</code>.</dd>
+      <dt>SELECT FOR UPDATE</dt>  <dd>Pessimistic row lock; blocks other writers of that row.</dd>
+      <dt>FOR UPDATE SKIP LOCKED</dt><dd>Build queues without contention.</dd>
+      <dt>NOWAIT</dt>             <dd>Don't wait; raise an error if locked.</dd>
+      <dt>deadlock_timeout</dt>   <dd>Default 1s. Time before deadlock detector runs.</dd>
+      <dt>40P01</dt>              <dd>Deadlock victim error. Always retry the whole transaction.</dd>
+      <dt>lock_timeout</dt>       <dd>Per-session cap on how long any single lock wait can take. Set on migrations.</dd>
+      <dt>pg_blocking_pids(pid)</dt><dd>Array of PIDs blocking the given PID. The query in § 13.5 is built on it.</dd>
+      <dt>Advisory locks</dt>     <dd>Application-defined mutexes. Session- or transaction-scoped.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/explicit-locking.html">Explicit Locking</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE">SELECT — Locking Clauses</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS">Advisory Lock Functions</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/view-pg-locks.html">View: pg_locks</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="mvcc.html">
+      <span class="label">← Previous</span>
+      <span class="title">XII · MVCC &amp; VACUUM</span>
+    </a>
+    <a class="next" href="indexes.html">
+      <span class="label">Next →</span>
+      <span class="title">XIV · Indexes</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

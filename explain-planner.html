@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EXPLAIN &amp; the Planner — Postgres Study</title>
+  <meta name="description" content="Reading query plans, ANALYZE vs BUFFERS, join strategies, the cost model, and when the planner is wrong.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="explain-planner.html" aria-current="page">XVI · EXPLAIN</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">16</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter XVI · Storage</span>
+      <h1>EXPLAIN <em>&amp; the planner</em></h1>
+      <p class="standfirst">Postgres turns your declarative SQL into an imperative plan. Reading that plan — and noticing when the planner has guessed wrong — is the single most useful debugging skill in the database.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">The <strong>planner</strong> enumerates possible execution strategies for your query, estimates each one's cost using table statistics, and picks the cheapest. <strong>EXPLAIN</strong> prints the plan it chose; <strong>EXPLAIN ANALYZE</strong> runs the plan and prints what actually happened. Comparing the estimate to the reality is how you find every slow query that has ever been slow.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 16.1</span> The two commands</h2>
+
+    <dl class="kv">
+      <dt>EXPLAIN q</dt>           <dd>Print the planned tree with estimated costs. No execution.</dd>
+      <dt>EXPLAIN ANALYZE q</dt>   <dd>Run <code>q</code> and print actual row counts, timings, and loops alongside the estimates.</dd>
+      <dt>EXPLAIN (BUFFERS) q</dt> <dd>Add per-node shared/local buffer hit/read counts. Use with ANALYZE.</dd>
+      <dt>EXPLAIN (FORMAT JSON) q</dt><dd>Machine-readable output for visualisers like <a href="https://explain.depesz.com">depesz.com</a> or <a href="https://explain.dalibo.com">dalibo.com</a>.</dd>
+      <dt>EXPLAIN (SETTINGS) q</dt><dd>Show non-default GUCs in effect. Useful when a query behaves differently in production.</dd>
+    </dl>
+
+    <p>Defensive recipe: use this every time.</p>
+
+<pre class="language-sql" data-lang="sql"><code class="language-sql">EXPLAIN (ANALYZE, BUFFERS, VERBOSE, SETTINGS, FORMAT TEXT) &lt;your query&gt;;</code></pre>
+
+    <div class="callout warning">
+      <span class="callout-label">Caveat</span>
+      <p><code>EXPLAIN ANALYZE</code> <em>actually executes</em> the query, including any <code>UPDATE</code>, <code>DELETE</code>, or <code>INSERT</code> it contains. To inspect a mutation safely, wrap it in a transaction and roll back:</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
+EXPLAIN (ANALYZE, BUFFERS) DELETE FROM events WHERE created_at &lt; '2020-01-01';
+ROLLBACK;</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 16.2</span> Reading the output</h2>
+
+    <p>A small example:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 16.1</span> A simple plan, annotated</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">EXPLAIN ANALYZE
+SELECT c.name, sum(o.total)
+FROM   customers c
+JOIN   orders    o ON o.customer_id = c.id
+WHERE  o.placed_at &gt;= now() - interval '30 days'
+GROUP  BY c.id;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Output</p>
+<pre class="code" data-lang="plan" style="margin: 0;">HashAggregate  (cost=12450.10..12462.40 rows=1230 width=42)
+                 (actual time=185.2..186.1 rows=1198 loops=1)
+  Group Key: c.id
+  -&gt; Hash Join  (cost=210.50..11890.00 rows=112020 width=20)
+                  (actual time=2.1..172.4 rows=110340 loops=1)
+       Hash Cond: (o.customer_id = c.id)
+       -&gt; Index Scan using orders_placed_at_idx on orders o
+            (cost=0.43..10980.20 rows=112020 width=12)
+            (actual time=0.03..118.7 rows=110340 loops=1)
+            Index Cond: (placed_at &gt;= (now() - '30 days'::interval))
+       -&gt; Hash  (cost=130.00..130.00 rows=8000 width=14)
+                  (actual time=2.0..2.0 rows=8000 loops=1)
+            -&gt; Seq Scan on customers c
+                 (cost=0.00..130.00 rows=8000 width=14)
+Planning Time: 0.412 ms
+Execution Time: 186.7 ms</pre>
+      </div>
+    </div>
+
+    <p>How to read it:</p>
+
+    <ul>
+      <li>Plans are <em>trees</em>, printed depth-first, deepest node innermost. The top line is the final operation.</li>
+      <li>Each node prints <strong>cost=startup..total rows=estimated width=bytes</strong> and (with <code>ANALYZE</code>) <strong>actual time=startup..total rows=actual loops=n</strong>.</li>
+      <li><em>Cost</em> is in abstract units — one unit ≈ the cost of reading one sequential page. It is not seconds.</li>
+      <li><em>Loops</em> means "how many times this subtree ran." For nested loops, the inner node's totals are <em>per loop</em>; multiply by <code>loops</code> for total work.</li>
+      <li>The most diagnostic line is the discrepancy between <strong>estimated rows</strong> and <strong>actual rows</strong>. Order-of-magnitude misestimates are why most plans go wrong.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 16.3</span> Plan nodes you'll see all the time</h2>
+
+    <h3>Scans</h3>
+    <dl class="kv">
+      <dt>Seq Scan</dt>          <dd>Read every page of the table. Correct for small tables or for queries returning a large fraction of rows.</dd>
+      <dt>Index Scan</dt>        <dd>Walk an index, then fetch each row from the heap. Best for selective queries (few rows).</dd>
+      <dt>Index Only Scan</dt>   <dd>Walk the index without touching the heap. Requires every selected column to be in the index, and pages marked all-visible.</dd>
+      <dt>Bitmap Index Scan + Bitmap Heap Scan</dt><dd>Build a bitmap of matching tuple IDs from one or more indexes, then fetch them in heap order. Cheap for medium selectivity; combines multiple indexes via <code>BitmapAnd</code> / <code>BitmapOr</code>.</dd>
+    </dl>
+
+    <h3>Joins</h3>
+    <dl class="kv">
+      <dt>Nested Loop</dt>       <dd>For each outer row, probe the inner side. Excellent when the outer is tiny and the inner has a usable index. Disastrous when the outer is large.</dd>
+      <dt>Hash Join</dt>         <dd>Build a hash table over the smaller side, probe it with the larger. Works only for equi-joins. The default for medium/large joins when memory allows.</dd>
+      <dt>Merge Join</dt>        <dd>Both inputs sorted by the join key; walk them in lockstep. Useful when both sides arrive pre-sorted (e.g. from index scans on the join key).</dd>
+    </dl>
+
+    <h3>Aggregation, sort, limit</h3>
+    <dl class="kv">
+      <dt>HashAggregate</dt>     <dd>Group by hashing the group key. Default when memory allows.</dd>
+      <dt>GroupAggregate</dt>    <dd>Group by walking already-sorted input. Picked when input is pre-sorted (often after an index scan).</dd>
+      <dt>Sort</dt>              <dd>Spool, sort, emit. Note the <em>Sort Method</em> line: <code>quicksort Memory: …</code> is fine, <code>external merge Disk: …</code> means you blew past <code>work_mem</code>.</dd>
+      <dt>Limit</dt>             <dd>Stop pulling rows after N. Crucial for early termination in nested-loop top-N plans.</dd>
+      <dt>Gather / Gather Merge</dt><dd>Parallel-query coordinator. Children prefixed <code>Parallel</code> ran in worker processes.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 16.4</span> The cost model</h2>
+
+    <p>Each plan node has a cost formula. The numbers come from a handful of GUCs:</p>
+
+    <dl class="kv">
+      <dt>seq_page_cost</dt>            <dd>Cost of one sequentially-read page. <em>1.0</em>, the unit.</dd>
+      <dt>random_page_cost</dt>         <dd>Cost of one randomly-read page. Default <em>4.0</em>; on SSDs, lower this to <em>1.1–1.5</em>.</dd>
+      <dt>cpu_tuple_cost</dt>           <dd>Per-row CPU. Default 0.01.</dd>
+      <dt>cpu_index_tuple_cost</dt>     <dd>Per-index-row CPU. Default 0.005.</dd>
+      <dt>cpu_operator_cost</dt>        <dd>Per-operator CPU. Default 0.0025.</dd>
+      <dt>work_mem</dt>                 <dd>Memory per sort / hash node. Spills to disk above this.</dd>
+      <dt>effective_cache_size</dt>     <dd>The planner's estimate of how much of the data is hot in OS cache. Higher → more inclined to use indexes.</dd>
+    </dl>
+
+    <p>The default <code>random_page_cost = 4</code> dates from the spinning-disk era. On modern SSDs it makes the planner avoid indexes for queries it shouldn't. Setting <code>random_page_cost = 1.1</code> in <code>postgresql.conf</code> is one of the highest-impact one-line config changes you can make.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 16.5</span> Statistics — why the planner is sometimes wrong</h2>
+
+    <p>The planner estimates "how many rows match this predicate" using statistics gathered by <code>ANALYZE</code> (and run automatically by autovacuum): per-column most-common-values, histograms, null fractions, and average row width. The view <code>pg_stats</code> exposes them.</p>
+
+    <p>Things that defeat default statistics:</p>
+
+    <ul>
+      <li><strong>Correlated columns.</strong> Postgres assumes independent column distributions. <code>WHERE country='US' AND zip='90210'</code> is estimated as the product of two selectivities — but zip determines country. Fix with extended statistics:
+        <pre class="code" style="margin: 0.4em 0;"><code>CREATE STATISTICS address_corr (dependencies, ndistinct)
+  ON country, zip FROM addresses;
+ANALYZE addresses;</code></pre>
+      </li>
+      <li><strong>Skewed columns with rare values.</strong> If a value is rarer than the MCV-list threshold, the planner falls back to <code>(1 - sum(mcv_freqs)) / n_distinct</code> — usually a big overestimate. Raise <code>default_statistics_target</code> for the column with <code>ALTER TABLE … ALTER COLUMN … SET STATISTICS 1000;</code> and re-<code>ANALYZE</code>.</li>
+      <li><strong>Stale stats.</strong> After a bulk load or schema change, run <code>ANALYZE</code> manually; don't wait for autovacuum.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 16.6</span> Smells, in order of importance</h2>
+
+    <ol>
+      <li><strong>Estimated vs actual rows off by &gt; 10×.</strong> The planner is choosing the wrong strategy because its inputs are wrong. Fix stats first; don't waste time tuning indexes against bad estimates.</li>
+      <li><strong>Sort Method: external merge Disk: …</strong> Your sort spilled. Raise <code>work_mem</code> for the session or add an index to avoid the sort.</li>
+      <li><strong>Seq Scan on a big table for a selective query.</strong> Missing index, or planner thinks the index isn't worth it (often: stale <code>random_page_cost</code>).</li>
+      <li><strong>Nested Loop with high <code>loops</code> count and per-loop work.</strong> Multiply <code>actual time × loops</code> for the inner; if it dominates, force a hash join with a higher row estimate (fix stats) or rewrite.</li>
+      <li><strong>Rows Removed by Filter: large.</strong> Postgres pulled millions of rows from a scan, then threw most of them away. Pushdown the predicate via a better-matching index or a partial index.</li>
+      <li><strong>BUFFERS: read &gt;&gt; hit on a frequently-run query.</strong> The data isn't in cache and every run pays full I/O. Either the table is too big for shared_buffers, or the query touches too many pages — usually back to the index discussion.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 16.7</span> Forcing the planner's hand</h2>
+
+    <p>Postgres has no query hints. The intentional design is that you fix the underlying problem — bad stats, missing index, mis-tuned cost GUC — rather than override the optimiser per query. But when you really must, the toolbox:</p>
+
+    <dl class="kv">
+      <dt>SET LOCAL enable_seqscan = off</dt><dd>Per-transaction. Discourages but does not forbid seq scans (costs become very high).</dd>
+      <dt>SET LOCAL enable_nestloop = off</dt><dd>Same for nested loops.</dd>
+      <dt>SET LOCAL work_mem = '256MB'</dt><dd>For one transaction; useful for a single big ad-hoc analytic query.</dd>
+      <dt>Materialise with a CTE</dt>          <dd>A <code>WITH x AS MATERIALIZED (…)</code> forces evaluation of <code>x</code> first, which can break a bad join order.</dd>
+      <dt>OFFSET 0 in a subquery</dt>          <dd>An old trick that prevents subquery flattening. The pg_hint_plan extension is the principled alternative.</dd>
+    </dl>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>EXPLAIN, in one card</h3>
+    <dl>
+      <dt>EXPLAIN ANALYZE</dt>      <dd>Always include BUFFERS. Wrap mutating queries in BEGIN/ROLLBACK.</dd>
+      <dt>cost vs actual time</dt>  <dd>Cost is unitless. Look at actual time and rows.</dd>
+      <dt>rows × loops</dt>         <dd>For nested loops, multiply to get true work done in the inner side.</dd>
+      <dt>Seq Scan</dt>             <dd>Fine for small tables or unselective queries. Suspicious otherwise.</dd>
+      <dt>Bitmap scans</dt>         <dd>Postgres combining multiple indexes. Often a sign you could use a single composite index.</dd>
+      <dt>Hash / Merge / Nested Loop</dt><dd>Hash for medium/large equi-joins, Nested Loop for small outer + indexed inner, Merge when inputs already sorted.</dd>
+      <dt>Sort spilled to disk</dt> <dd>Raise <code>work_mem</code> or add an index that delivers pre-sorted rows.</dd>
+      <dt>random_page_cost</dt>     <dd>Default 4 is wrong on SSDs. Set 1.1 globally.</dd>
+      <dt>CREATE STATISTICS</dt>    <dd>Fix correlated-column estimates.</dd>
+      <dt>Estimate &gt; 10× off</dt>     <dd>The most common root cause of bad plans. Fix the stats before tuning anything else.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/sql-explain.html">SQL: EXPLAIN</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/using-explain.html">Using EXPLAIN</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/runtime-config-query.html">Runtime: Query Planner Configuration</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/planner-stats.html">How the Planner Uses Statistics</a></li>
+      <li><a href="https://explain.depesz.com">depesz.com — plan visualiser</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="partitioning.html">
+      <span class="label">← Previous</span>
+      <span class="title">XV · Partitioning</span>
+    </a>
+    <a class="next" href="functions-and-triggers.html">
+      <span class="label">Next →</span>
+      <span class="title">XVII · Functions &amp; triggers</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

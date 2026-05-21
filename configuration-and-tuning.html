@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Configuration &amp; tuning — Postgres Study</title>
+  <meta name="description" content="The GUC system, memory settings, WAL knobs, autovacuum tuning, connection pooling, and pg_stat_statements.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="configuration-and-tuning.html" aria-current="page">XVIII · Configuration &amp; tuning</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">18</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter XVIII · Operations</span>
+      <h1>Configuration &amp; tuning, <em>or, the dials that matter</em></h1>
+      <p class="standfirst">A few hundred GUCs, of which maybe a dozen actually move performance on a given workload. This chapter is the shortlist.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">Default <code>postgresql.conf</code> is shipped conservative — it assumes a laptop, not a server. The first time a Postgres install is put on real hardware, the dial-turning that gets it from "fine" to "fast" is almost always the same handful of settings. This chapter names them and explains what each one controls.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 18.1</span> The GUC system — <code>pg_settings</code>, scope, reload</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 18.2</span> Memory — <code>shared_buffers</code>, <code>work_mem</code>, <code>maintenance_work_mem</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 18.3</span> WAL — <code>wal_buffers</code>, <code>checkpoint_timeout</code>, <code>max_wal_size</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 18.4</span> Autovacuum tuning</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 18.5</span> Connections, <code>max_connections</code>, and pooling</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 18.6</span> <code>pg_stat_statements</code></h2>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Configuration &amp; tuning, in one card</h3>
+    <dl>
+      <dt><code>shared_buffers</code></dt>             <dd>~25% of RAM is the canonical starting point.</dd>
+      <dt><code>effective_cache_size</code></dt>       <dd>Planner hint. Set to ~50–75% of RAM. Doesn't allocate anything.</dd>
+      <dt><code>work_mem</code></dt>                   <dd>Per-sort, per-hash. Multiplied by concurrent operations — be careful.</dd>
+      <dt><code>maintenance_work_mem</code></dt>       <dd>Used by <code>VACUUM</code>, <code>CREATE INDEX</code>, <code>ALTER TABLE</code>. Generous is fine.</dd>
+      <dt><code>random_page_cost</code></dt>           <dd>Default 4 assumes spinning rust. SSDs want ~1.1.</dd>
+      <dt><code>checkpoint_timeout</code> / <code>max_wal_size</code></dt><dd>Stretch them to reduce checkpoint frequency on write-heavy workloads.</dd>
+      <dt><code>autovacuum_vacuum_scale_factor</code></dt><dd>Lower it on hot tables. Default 0.2 lets bloat snowball.</dd>
+      <dt><code>max_connections</code></dt>            <dd>Keep low (~100–300). Pool in front with PgBouncer.</dd>
+      <dt><code>pg_stat_statements</code></dt>         <dd>Enable it. Top-N queries by total time is your most useful single view.</dd>
+      <dt><code>ALTER SYSTEM</code></dt>               <dd>Writes <code>postgresql.auto.conf</code>. <code>SELECT pg_reload_conf()</code> to apply.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/runtime-config.html">Server Configuration (chapter)</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/runtime-config-resource.html">Resource Consumption</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/runtime-config-wal.html">Write Ahead Log</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/runtime-config-autovacuum.html">Automatic Vacuuming</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/pgstatstatements.html">pg_stat_statements</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="functions-and-triggers.html">
+      <span class="label">← Previous</span>
+      <span class="title">XVII · Functions &amp; triggers</span>
+    </a>
+    <a class="next" href="replication-and-wal.html">
+      <span class="label">Next →</span>
+      <span class="title">XIX · Replication &amp; WAL</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

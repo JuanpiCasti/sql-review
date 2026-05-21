@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Indexes — Postgres Study</title>
+  <meta name="description" content="B-tree, Hash, GIN, GiST, BRIN, plus partial, expression, and covering indexes.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="indexes.html" aria-current="page">XIV · Indexes</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">14</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter XIV · Storage</span>
+      <h1>Indexes, <em>or, every shortcut Postgres knows</em></h1>
+      <p class="standfirst">Five fundamental index types, four ways to modify them, and one rule: the right index for the query you're trying to make fast is rarely the one you'd add by default.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">An <strong>index</strong> is an auxiliary data structure that lets Postgres find rows without scanning the whole table. Every index type — B-tree, Hash, GIN, GiST, SP-GiST, BRIN — answers a different family of questions: equality vs. range vs. containment vs. proximity vs. block-locality. Choosing the wrong type produces an index Postgres won't use; choosing the right one turns a thirty-second sequential scan into a millisecond probe.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.1</span> The five index types</h2>
+
+    <div class="data-table">
+      <p class="caption">What each index type is good for</p>
+      <table class="data">
+        <thead><tr><th>Type</th><th>Supports</th><th>Use for</th><th>Avoid for</th></tr></thead>
+        <tbody>
+          <tr><td>B-tree</td><td><code>=</code> <code>&lt;</code> <code>&gt;</code> <code>BETWEEN</code> <code>IN</code> <code>LIKE 'p%'</code> <code>ORDER BY</code></td><td>Default. Almost everything.</td><td>Substring search; full-text; arrays.</td></tr>
+          <tr><td>Hash</td><td><code>=</code> only</td><td>Equality on large keys where you don't need ordering or range.</td><td>Anything else. Rarely beats B-tree in practice.</td></tr>
+          <tr><td>GIN</td><td>Contains-an-element queries on composite values</td><td>Arrays (<code>@&gt;</code>), JSONB (<code>@&gt;</code>, <code>?</code>, <code>?&amp;</code>), full-text (<code>@@</code>), trigrams (<code>pg_trgm</code>).</td><td>Single-column equality on scalars.</td></tr>
+          <tr><td>GiST</td><td>Range and proximity</td><td>Range types, geometric data (PostGIS), exclusion constraints, nearest-neighbour ordering.</td><td>Plain equality.</td></tr>
+          <tr><td>BRIN</td><td>Block-range minima/maxima</td><td>Very large tables whose data is physically ordered by the indexed column — time-series, append-only logs.</td><td>Tables without physical correlation; small tables.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>(SP-GiST exists too — for non-balanced trees like quad-trees and radix tries. Useful, but rare outside specialised workloads.)</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.2</span> B-tree, in detail</h2>
+
+    <p>The default. Created by every <code>PRIMARY KEY</code> and <code>UNIQUE</code> constraint. A balanced search tree whose leaves are sorted by the indexed key. Supports every operator that can be expressed as an ordering — <code>=</code>, <code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>BETWEEN</code>, <code>IN</code>, and prefix <code>LIKE</code> patterns like <code>'foo%'</code>.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 14.1</span> The composite-key rule</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON orders (customer_id, placed_at);
+
+-- supported by the index:
+SELECT * FROM orders WHERE customer_id = 1;
+SELECT * FROM orders WHERE customer_id = 1 AND placed_at &gt; now() - interval '7 days';
+SELECT * FROM orders WHERE customer_id = 1 ORDER BY placed_at DESC LIMIT 10;
+
+-- *not* well supported (the index can't skip ahead on the second column):
+SELECT * FROM orders WHERE placed_at &gt; now() - interval '7 days';
+-- needs its own index on (placed_at), or a covering composite (placed_at, customer_id).</code></pre>
+    </div>
+
+    <p>A composite B-tree on <code>(a, b, c)</code> is useful for queries that filter <code>a</code>, or <code>a</code> and <code>b</code>, or all three — but <em>not</em> for queries that filter only <code>b</code>. Think of the tree as sorted by <code>a</code> first, then <code>b</code> within each <code>a</code>: there's no efficient way to skip over the <code>a</code> dimension.</p>
+
+    <aside class="marginalia">
+      <span class="label">Equality + range</span>
+      The most useful composite-index recipe: <em>equality columns first, range column last.</em> An index on <code>(status, created_at)</code> serves <code>WHERE status = 'open' AND created_at &gt; X ORDER BY created_at</code> perfectly — the equality narrows, the range walks the leaves in order.
+    </aside>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.3</span> GIN — generalised inverted index</h2>
+
+    <p>For columns whose values are <em>composite</em> — arrays, JSONB documents, tsvectors — and you want to ask "which rows contain element X?", GIN inverts the storage: one index entry per distinct element, pointing at every row that contains it.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 14.2</span> JSONB and array indexes</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- arrays
+CREATE INDEX ON posts USING gin (tags);
+SELECT * FROM posts WHERE tags @&gt; ARRAY['postgres'];
+
+-- jsonb with the default opclass (jsonb_ops):
+--   supports @&gt; ? ?| ?&amp;
+CREATE INDEX ON events USING gin (payload);
+SELECT * FROM events WHERE payload @&gt; '{"type": "click"}';
+
+-- jsonb with jsonb_path_ops:
+--   smaller, faster, but only supports @&gt; (containment)
+CREATE INDEX ON events USING gin (payload jsonb_path_ops);
+
+-- full-text
+CREATE INDEX ON docs USING gin (to_tsvector('english', body));
+SELECT * FROM docs WHERE to_tsvector('english', body) @@ to_tsquery('database &amp; postgres');</code></pre>
+    </div>
+
+    <p>GIN indexes are slow to update — adding a row touches every element entry. Postgres ameliorates this with a "pending list" of recent updates that is merged lazily; tune with <code>fastupdate = on</code> (default) and <code>gin_pending_list_limit</code>.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.4</span> GiST — generalised search tree</h2>
+
+    <p>A pluggable framework for index types over data with no natural total order: geometric points, ranges, IP networks, full-text rankings. PostGIS lives here. So do range types — and the most underused feature they enable, <em>exclusion constraints</em>:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 14.3</span> No two reservations may overlap for the same room</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE EXTENSION IF NOT EXISTS btree_gist;  -- to mix scalar and range
+
+CREATE TABLE reservations (
+  id          bigserial PRIMARY KEY,
+  room_id     int      NOT NULL,
+  during      tstzrange NOT NULL,
+
+  EXCLUDE USING gist (
+    room_id WITH =,
+    during  WITH &amp;&amp;   -- the range overlap operator
+  )
+);</code></pre>
+    </div>
+
+    <p>The constraint is enforced by a GiST index on <code>(room_id, during)</code> using the overlap operator. Any <code>INSERT</code> or <code>UPDATE</code> that would create an overlap fails. There is no application-level race window — the index <em>is</em> the constraint.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.5</span> BRIN — for big, ordered tables</h2>
+
+    <p>A BRIN index stores, for each block-range of the table, the minimum and maximum value of the indexed column in that range. A query for <code>created_at &gt; X</code> can skip every range whose max is &lt; X — without storing one index entry per row.</p>
+
+    <p>The trade-off: BRIN only helps if the data is <em>physically ordered</em> by the indexed column. On an append-only events table indexed on <code>created_at</code>, a BRIN index a few kilobytes in size can prune 99% of a terabyte-scale table. On a randomly-distributed column, BRIN does nothing for you — every range will have a wide min/max and the scan can skip nothing.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 14.4</span> Time-series BRIN</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON events USING brin (created_at) WITH (pages_per_range = 128);</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.6</span> Partial indexes</h2>
+
+    <p>An index with a <code>WHERE</code> clause. The index covers only the rows matching the predicate. Smaller, cheaper to maintain, and often better-suited to skewed data.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 14.5</span> Index only the open orders</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- if 95% of orders are 'closed' and you only ever query the open ones:
+CREATE INDEX ON orders (placed_at)
+WHERE status = 'open';
+
+-- Postgres will use this for:
+SELECT * FROM orders WHERE status = 'open' ORDER BY placed_at DESC LIMIT 50;</code></pre>
+    </div>
+
+    <p>The planner matches the partial index's <code>WHERE</code> against the query's <code>WHERE</code>. If the query is more restrictive (or equally restrictive) the index is usable. Partial indexes are also the standard way to enforce <em>conditional uniqueness</em>:</p>
+
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE UNIQUE INDEX ON users (email) WHERE deleted_at IS NULL;
+-- two soft-deleted users may share an email; two live users may not.</code></pre>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.7</span> Expression indexes</h2>
+
+    <p>Index a function of a column rather than the column itself. The query must use the exact same expression for the index to apply.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 14.6</span> Case-insensitive lookup</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON users (lower(email));
+SELECT * FROM users WHERE lower(email) = lower('Ada@Example.com');
+
+-- another classic: extracting day from a timestamp
+CREATE INDEX ON events (date_trunc('day', created_at));</code></pre>
+    </div>
+
+    <p>The expression must be <em>immutable</em> — it must return the same output for the same input forever. <code>now()</code>, <code>random()</code>, and timezone-dependent casts of <code>timestamp</code> all fail this rule and Postgres will refuse the index.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.8</span> Covering indexes and INCLUDE</h2>
+
+    <p>A query that can be satisfied entirely from an index — without touching the table heap — is an <em>index-only scan</em>. It's the fastest plan Postgres has. The index must contain every column the query references.</p>
+
+    <p>You can append extra payload columns to a B-tree index without making them part of the search key, via <code>INCLUDE</code>:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 14.7</span> An INCLUDE-covered query</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON orders (customer_id) INCLUDE (placed_at, total);
+
+SELECT placed_at, total
+FROM   orders
+WHERE  customer_id = 1;
+-- can be served as an Index Only Scan: no heap fetches.</code></pre>
+    </div>
+
+    <p>Whether Postgres actually uses an index-only scan also depends on the <strong>visibility map</strong>: rows in pages not marked all-visible still require a heap fetch to check MVCC visibility. <code>VACUUM</code> maintains the visibility map; on a heavily-updated table that hasn't been vacuumed recently, even a perfectly-covered query can degrade to a regular index scan.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.9</span> CREATE INDEX CONCURRENTLY</h2>
+
+    <p>Plain <code>CREATE INDEX</code> takes a <code>SHARE</code> lock — blocking all writes for the duration. On a large table that's unacceptable. <code>CREATE INDEX CONCURRENTLY</code> trades a longer build time for non-blocking behaviour: it builds in two scans, allowing concurrent writes throughout.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 14.8</span> The production-safe spelling</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX CONCURRENTLY idx_orders_customer ON orders (customer_id);</code></pre>
+    </div>
+
+    <div class="callout pitfall">
+      <span class="callout-label">If it fails</span>
+      <p>A concurrent build that fails (constraint violation, killed session) leaves an <em>invalid</em> index behind, visible in <code>pg_index.indisvalid = false</code>. The planner won't use it; <code>VACUUM</code> still maintains it. Drop and retry:</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">DROP INDEX CONCURRENTLY IF EXISTS idx_orders_customer;
+CREATE INDEX CONCURRENTLY idx_orders_customer ON orders (customer_id);</code></pre>
+      <p>Concurrent builds cannot run inside a transaction block — they're driver-of-the-bus statements that manage their own state.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 14.10</span> Finding indexes worth dropping</h2>
+
+    <p>Every index slows down writes and consumes disk. Periodically audit:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 14.9</span> Unused and duplicate indexes</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- indexes that have never been scanned since last stats reset
+SELECT s.schemaname, s.relname, s.indexrelname,
+       pg_size_pretty(pg_relation_size(s.indexrelid)) AS size,
+       s.idx_scan
+FROM   pg_stat_user_indexes s
+JOIN   pg_index i ON i.indexrelid = s.indexrelid
+WHERE  s.idx_scan = 0
+  AND  NOT i.indisunique          -- never drop a uniqueness-enforcing index
+  AND  NOT i.indisprimary
+ORDER  BY pg_relation_size(s.indexrelid) DESC;</code></pre>
+    </div>
+
+    <p>Reset the stats counter with <code>pg_stat_reset()</code> at a known point and check again a few weeks later. An index whose <code>idx_scan</code> stays at zero across a full business cycle is a candidate for <code>DROP INDEX CONCURRENTLY</code>.</p>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Indexes, in one card</h3>
+    <dl>
+      <dt>B-tree</dt>            <dd>Default. <code>= &lt; &gt; BETWEEN IN ORDER BY</code> + <code>LIKE 'p%'</code>.</dd>
+      <dt>Hash</dt>              <dd><code>=</code> only. Rare; B-tree usually wins.</dd>
+      <dt>GIN</dt>               <dd>Containment on composite values: arrays, JSONB, full-text.</dd>
+      <dt>GiST</dt>              <dd>Ranges, geometry, exclusion constraints.</dd>
+      <dt>BRIN</dt>              <dd>Tiny index for huge tables physically ordered by the indexed column.</dd>
+      <dt>Composite (a,b,c)</dt><dd>Equality cols first, range col last. Useful for filters on prefixes only.</dd>
+      <dt>Partial</dt>           <dd><code>WHERE</code> clause on the index. Conditional uniqueness, skewed data.</dd>
+      <dt>Expression</dt>        <dd>Index <code>f(col)</code>; query must use the same expression. <code>f</code> must be IMMUTABLE.</dd>
+      <dt>INCLUDE</dt>           <dd>Carry payload columns to enable index-only scans.</dd>
+      <dt>Index-only scan</dt>   <dd>Fastest plan. Needs visibility map current — keep VACUUM healthy.</dd>
+      <dt>CONCURRENTLY</dt>      <dd>Non-blocking build / drop. Cannot run inside a transaction.</dd>
+      <dt>Audit</dt>             <dd><code>pg_stat_user_indexes.idx_scan = 0</code> + a full cycle of traffic → candidate to drop.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/indexes-types.html">Index Types</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/indexes-multicolumn.html">Multicolumn Indexes</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/indexes-partial.html">Partial Indexes</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html">Index-Only Scans</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-createindex.html">SQL: CREATE INDEX</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="locking-deadlocks.html">
+      <span class="label">← Previous</span>
+      <span class="title">XIII · Locking &amp; deadlocks</span>
+    </a>
+    <a class="next" href="partitioning.html">
+      <span class="label">Next →</span>
+      <span class="title">XV · Partitioning</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

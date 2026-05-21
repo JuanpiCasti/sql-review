@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transactions — Postgres Study</title>
+  <meta name="description" content="Atomicity, BEGIN/COMMIT/ROLLBACK, savepoints, and two-phase commit in PostgreSQL.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="transactions.html" aria-current="page">X · Transactions</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">10</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter X · Concurrency</span>
+      <h1>Transactions, <em>or, all-or-nothing</em></h1>
+      <p class="standfirst">A unit of work that either takes effect as a whole or leaves no trace at all. The smallest, most important abstraction Postgres gives you.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">A <strong>transaction</strong> is a sequence of statements that the database treats as one atomic unit. Either every change inside it lands together, or none of them do — there is no partial outcome a concurrent reader can ever observe. In Postgres this is not opt-in: <em>every</em> SQL statement runs inside a transaction. The only question is whether you opened one explicitly or let the server wrap a single statement for you.</p>
+
+    <p>The mechanics live behind four verbs — <code>BEGIN</code>, <code>COMMIT</code>, <code>ROLLBACK</code>, <code>SAVEPOINT</code> — but the interesting part is what Postgres guarantees while the transaction is open, and what it refuses to do when something goes wrong inside one.</p>
+  </section>
+
+  <aside class="marginalia">
+    <span class="label">A note</span>
+    The SQL standard calls it <em>START TRANSACTION</em>; Postgres accepts both. <code>BEGIN</code> is the idiomatic Postgres spelling and the one you will see in production code.
+  </aside>
+
+  <section>
+    <h2><span class="num">§ 10.1</span> The four verbs</h2>
+
+    <p>Outside of a transaction block, each statement is implicitly wrapped in its own transaction and committed the moment it returns. Inside a block, statements accumulate and only become visible to other sessions at <code>COMMIT</code>.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 10.1</span> A two-statement transfer</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+UPDATE accounts SET balance = balance + 100 WHERE id = 2;
+COMMIT;</code></pre>
+    </div>
+
+    <p>If the server crashes — or you close your connection — between the two updates, neither one will have happened. A concurrent <code>SELECT</code> reading the same rows will observe either both updates or neither, never one of them.</p>
+
+    <p>To discard everything since the <code>BEGIN</code>, use <code>ROLLBACK</code>:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 10.2</span> Discarding work in flight</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
+DELETE FROM orders WHERE created_at &lt; now() - interval '5 years';
+-- on reflection, that was too aggressive
+ROLLBACK;</code></pre>
+    </div>
+
+    <p>The <code>DELETE</code> may have touched millions of rows; after the <code>ROLLBACK</code>, none of them are gone. The MVCC tuples it wrote are dead-on-arrival and will be reclaimed by a future <code>VACUUM</code>.</p>
+  </section>
+
+  <aside class="marginalia">
+    <span class="label">Idiom</span>
+    Some clients (psql in default mode, JDBC, libpq) commit each statement automatically. Others (psycopg, the asyncpg driver in transaction mode) open a transaction implicitly on the first statement and require you to call <code>commit()</code>. Know which one you're holding.
+  </aside>
+
+  <section>
+    <h2><span class="num">§ 10.2</span> Aborted transactions</h2>
+
+    <p>This is the gotcha that catches every newcomer. The instant <em>any</em> statement inside a transaction raises an error, Postgres marks the entire transaction as aborted. Every subsequent statement until you issue <code>ROLLBACK</code> (or <code>ROLLBACK TO</code> a savepoint) is rejected with the same terse message:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 10.3</span> The aborted-transaction error</p>
+<pre class="language-sql" data-lang="psql"><code class="language-sql">BEGIN;
+SELECT * FROM oops;
+-- ERROR:  relation "oops" does not exist
+
+SELECT 1;
+-- ERROR:  current transaction is aborted,
+--         commands ignored until end of transaction block
+
+ROLLBACK;</code></pre>
+    </div>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Pitfall</span>
+      <p>Unlike MySQL, Postgres will not let you ignore the error and keep going. Once aborted, the only way out is <code>ROLLBACK</code> or <code>ROLLBACK TO &lt;savepoint&gt;</code>. Long-running connection-pool code that "tries and continues" will hang every subsequent query on that connection.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 10.3</span> Savepoints — nested rollback</h2>
+
+    <p>A <strong>savepoint</strong> is a named marker inside an open transaction. You can <code>ROLLBACK TO</code> it to discard work done after the marker without aborting the whole transaction, or <code>RELEASE</code> it to throw the marker away while keeping the work.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 10.4</span> Recovering from a failed insert</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
+INSERT INTO users (email) VALUES ('ada@example.com');
+
+SAVEPOINT before_optional;
+INSERT INTO audit (msg) VALUES ('admitted ada');
+-- ERROR:  null value in column "actor" violates not-null constraint
+
+ROLLBACK TO SAVEPOINT before_optional;
+-- the users insert is preserved; the audit insert is gone
+-- and the transaction is no longer in the aborted state
+
+INSERT INTO audit (actor, msg) VALUES ('system', 'admitted ada');
+COMMIT;</code></pre>
+    </div>
+
+    <p>Savepoints are how language drivers implement <em>nested</em> transactions: there is no real nesting in Postgres, but a driver can issue a <code>SAVEPOINT sp_42</code> when you call <code>begin()</code> a second time and <code>ROLLBACK TO sp_42</code> if that inner block raises.</p>
+
+    <aside class="marginalia">
+      <span class="label">Cost</span>
+      Savepoints are not free — each one allocates a sub-transaction ID. Loops that take a savepoint per row can exhaust the 32-bit subxid cache (64 per backend) and force every reader to consult <code>pg_subtrans</code>, badly hurting throughput.
+    </aside>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 10.4</span> Transaction characteristics</h2>
+
+    <p>You can attach modifiers to a transaction at its start. The two you will actually use:</p>
+
+    <dl class="kv">
+      <dt>READ ONLY</dt>
+      <dd>Forbids any write (<code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, DDL, <code>SELECT FOR UPDATE</code>). Lets the planner and the WAL machinery take some shortcuts; useful for reporting queries on a replica.</dd>
+      <dt>ISOLATION LEVEL</dt>
+      <dd><code>READ COMMITTED</code> (the default), <code>REPEATABLE READ</code>, or <code>SERIALIZABLE</code>. The subject of the <a href="isolation-levels.html">next chapter</a>.</dd>
+      <dt>DEFERRABLE</dt>
+      <dd>Only meaningful for <code>SERIALIZABLE READ ONLY</code>. Tells Postgres it may pause the transaction until it can run without ever causing a serialization failure — useful for long analytic queries.</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 10.5</span> Setting characteristics</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY DEFERRABLE;
+SELECT count(*) FROM ledger WHERE posted_on = current_date;
+COMMIT;
+
+-- or set the default for the session
+SET default_transaction_isolation = 'repeatable read';
+
+-- or change just this transaction after BEGIN
+BEGIN;
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+-- ...
+COMMIT;</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 10.5</span> Two-phase commit</h2>
+
+    <p>For distributed transactions across multiple databases, Postgres implements the XA-style <strong>two-phase commit</strong> protocol. The transaction is first <em>prepared</em> — durably persisted and ready to commit — but not yet visible. A coordinator then commits or rolls back each participant.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 10.6</span> Preparing and committing</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">BEGIN;
+UPDATE inventory SET qty = qty - 1 WHERE sku = 'A';
+PREPARE TRANSACTION 'order-77-leg-1';
+-- session can now disconnect; the prepared tx survives a crash
+
+-- later, from anywhere:
+COMMIT PREPARED 'order-77-leg-1';
+-- or
+ROLLBACK PREPARED 'order-77-leg-1';</code></pre>
+    </div>
+
+    <div class="callout warning">
+      <span class="callout-label">Operational warning</span>
+      <p>Prepared transactions hold locks and prevent <code>VACUUM</code> from advancing the xmin horizon <em>forever</em> until resolved. A crashed coordinator that never sends <code>COMMIT PREPARED</code> leaves you with bloat that grows linearly with write traffic. Always alarm on <code>pg_prepared_xacts</code>. The feature is gated behind <code>max_prepared_transactions = 0</code> by default for this reason.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 10.6</span> What lives outside a transaction</h2>
+
+    <p>A short, useful list of things you cannot do inside <code>BEGIN ... COMMIT</code>:</p>
+
+    <ul>
+      <li><code>VACUUM</code> (the whole point is to clean up across many transactions).</li>
+      <li><code>CREATE INDEX CONCURRENTLY</code> and <code>REINDEX CONCURRENTLY</code> (they manage their own internal transactions in stages).</li>
+      <li><code>CREATE DATABASE</code>, <code>DROP DATABASE</code>, <code>ALTER SYSTEM</code>.</li>
+      <li><code>CALL</code>ing a procedure that itself contains <code>COMMIT</code> / <code>ROLLBACK</code>.</li>
+    </ul>
+
+    <p>Conversely, almost <em>everything else</em> is transactional — including DDL. You can <code>BEGIN; ALTER TABLE …; CREATE INDEX …; ROLLBACK;</code> and the schema returns to exactly its prior state. This single property is what makes Postgres migrations so much safer than MySQL's, where most DDL implicitly commits.</p>
+
+    <aside class="marginalia">
+      <span class="label">Practical</span>
+      Every migration tool worth using wraps each migration in a transaction by default. The exceptions — <code>CREATE INDEX CONCURRENTLY</code>, partition attach/detach with lock waits — must be explicitly marked as non-transactional.
+    </aside>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 10.7</span> Idle in transaction</h2>
+
+    <p>A connection that has issued <code>BEGIN</code> but is doing nothing — waiting on application logic, a network round-trip, a user — is in the <strong>idle in transaction</strong> state. It still holds every lock it has taken and still pins the snapshot it acquired, blocking <code>VACUUM</code> from reclaiming dead tuples newer than its xmin.</p>
+
+    <p>You can see them in <code>pg_stat_activity</code>:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 10.7</span> Finding long-running idle transactions</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT pid,
+       usename,
+       state,
+       now() - xact_start AS xact_age,
+       query
+FROM pg_stat_activity
+WHERE state = 'idle in transaction'
+  AND xact_start &lt; now() - interval '5 minutes'
+ORDER BY xact_age DESC;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>pid</th><th>usename</th><th>state</th><th>xact_age</th><th>query</th></tr></thead>
+          <tbody>
+            <tr><td class="num">28104</td><td>etl</td><td>idle in transaction</td><td>00:42:11</td><td>SELECT * FROM staging…</td></tr>
+            <tr><td class="num">28377</td><td>app</td><td>idle in transaction</td><td>00:07:03</td><td>UPDATE users SET…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The defence is the GUC <code>idle_in_transaction_session_timeout</code>. Set it to something reasonable (a few minutes) and Postgres will kill the session, releasing locks and unblocking <code>VACUUM</code>:</p>
+
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER SYSTEM SET idle_in_transaction_session_timeout = '5min';
+SELECT pg_reload_conf();</code></pre>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Transactions, in one card</h3>
+    <dl>
+      <dt>BEGIN</dt>             <dd>Open a transaction. Synonym: <code>START TRANSACTION</code>.</dd>
+      <dt>COMMIT</dt>            <dd>Make everything since the <code>BEGIN</code> durable and visible.</dd>
+      <dt>ROLLBACK</dt>          <dd>Discard everything since the <code>BEGIN</code>.</dd>
+      <dt>SAVEPOINT n</dt>       <dd>Place a named marker mid-transaction.</dd>
+      <dt>ROLLBACK TO n</dt>     <dd>Undo only the work after marker <code>n</code>; transaction stays open.</dd>
+      <dt>RELEASE n</dt>         <dd>Drop the marker, keep the work.</dd>
+      <dt>PREPARE TRANSACTION</dt><dd>Persist a tx, ready for distributed <code>COMMIT PREPARED</code>.</dd>
+      <dt>Aborted state</dt>     <dd>Any error inside a tx → all further statements rejected until <code>ROLLBACK</code>.</dd>
+      <dt>DDL is transactional</dt><dd>You can <code>BEGIN; CREATE TABLE; ROLLBACK;</code> — almost no other database lets you.</dd>
+      <dt>Idle-in-tx</dt>        <dd>Open transactions block <code>VACUUM</code>. Always set <code>idle_in_transaction_session_timeout</code>.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/sql-begin.html">SQL: BEGIN</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-savepoint.html">SQL: SAVEPOINT</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-prepare-transaction.html">SQL: PREPARE TRANSACTION</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/tutorial-transactions.html">Tutorial: Transactions</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="jsonb.html">
+      <span class="label">← Previous</span>
+      <span class="title">IX · JSONB</span>
+    </a>
+    <a class="next" href="isolation-levels.html">
+      <span class="label">Next →</span>
+      <span class="title">XI · Isolation levels</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

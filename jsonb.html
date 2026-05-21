@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JSONB — Postgres Study</title>
+  <meta name="description" content="JSONB operators, JSONPath, GIN indexing strategies, and when to stop using JSONB.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="jsonb.html" aria-current="page">IX · JSONB</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">09</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter IX · Querying</span>
+      <h1>JSONB, <em>or, schemaless inside the schema</em></h1>
+      <p class="standfirst">A binary, indexable, query-able document type that lets you escape the schema when you need to — without leaving the database.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede"><strong>JSONB</strong> stores JSON documents in a parsed binary form. Unlike the older <code>json</code> type (which keeps the raw text), <code>jsonb</code> decomposes objects into keys and values once at write time, deduplicates keys, drops insignificant whitespace, and — most importantly — supports operators and indexes that make querying fast. For semi-structured data that varies per row, <code>jsonb</code> turns Postgres into a competent document store without sacrificing the relational machinery for everything else.</p>
+  </section>
+
+  <aside class="marginalia">
+    <span class="label">json vs jsonb</span>
+    Use <code>jsonb</code>. The only reason to keep <code>json</code> is to preserve the exact input text (whitespace, key order, duplicates) — useful for audit logs, useless for queries.
+  </aside>
+
+  <section>
+    <h2><span class="num">§ 9.1</span> The operators</h2>
+
+    <p>Two families: <em>extraction</em> (get a piece out) and <em>predicate</em> (ask a yes/no question, useful in <code>WHERE</code>).</p>
+
+    <h3>Extraction</h3>
+    <dl class="kv">
+      <dt>doc -&gt; 'key'</dt>      <dd>Get the value at <code>key</code> as <code>jsonb</code>.</dd>
+      <dt>doc -&gt;&gt; 'key'</dt>      <dd>Get the value at <code>key</code> as <code>text</code>.</dd>
+      <dt>doc -&gt; 0</dt>          <dd>Array element by index; same <code>-&gt;</code> / <code>-&gt;&gt;</code> distinction.</dd>
+      <dt>doc #&gt; '{a,b,0}'</dt>  <dd>Path extraction as <code>jsonb</code>.</dd>
+      <dt>doc #&gt;&gt; '{a,b,0}'</dt>  <dd>Path extraction as <code>text</code>.</dd>
+    </dl>
+
+    <h3>Predicates</h3>
+    <dl class="kv">
+      <dt>doc @&gt; subdoc</dt>     <dd>Contains: does <code>doc</code> contain every key/value (recursively) in <code>subdoc</code>?</dd>
+      <dt>doc &lt;@ subdoc</dt>     <dd>Contained by: the mirror.</dd>
+      <dt>doc ? 'key'</dt>       <dd>Does the top-level document have this key?</dd>
+      <dt>doc ?| array</dt>      <dd>…have <em>any</em> of these keys?</dd>
+      <dt>doc ?&amp; array</dt>      <dd>…have <em>all</em> of these keys?</dd>
+      <dt>doc @? path</dt>       <dd>Does the JSONPath match?</dd>
+      <dt>doc @@ path</dt>       <dd>Does the JSONPath predicate return true?</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 9.1</span> Extraction vs. predicates</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- payload looks like: {"type": "click", "user": {"id": 7, "tier": "pro"}, "tags": ["a","b"]}
+
+SELECT payload -&gt; 'user'              FROM events;  -- jsonb: {"id":7,"tier":"pro"}
+SELECT payload -&gt;&gt; 'type'             FROM events;  -- text:  click
+SELECT payload #&gt;&gt; '{user,tier}'      FROM events;  -- text:  pro
+
+SELECT * FROM events WHERE payload @&gt; '{"type": "click"}';   -- containment
+SELECT * FROM events WHERE payload ? 'tags';                 -- has top-level key
+SELECT * FROM events WHERE payload -&gt; 'tags' ? 'a';          -- array contains 'a'</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 9.2</span> Indexing — two opclasses</h2>
+
+    <p>JSONB is indexable with GIN. There are two operator classes to choose from:</p>
+
+    <dl class="kv">
+      <dt>jsonb_ops (default)</dt>       <dd>Indexes <em>every key and value</em> in each document. Supports <code>@&gt;</code>, <code>?</code>, <code>?|</code>, <code>?&amp;</code>, JSONPath. Largest on disk.</dd>
+      <dt>jsonb_path_ops</dt>            <dd>Indexes <em>only paths-to-leaf-values</em>, hashed. Supports <code>@&gt;</code> only. Smaller, faster, often substantially so.</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 9.2</span> Both indexes, one column</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX events_payload_gin       ON events USING gin (payload);
+-- supports @&gt;, ?, ?|, ?&amp;, @?, @@
+
+CREATE INDEX events_payload_path_gin  ON events USING gin (payload jsonb_path_ops);
+-- supports @&gt; only — but smaller and faster
+
+-- If your queries are all containment, prefer jsonb_path_ops.
+-- If you mix in key-existence (?), keep jsonb_ops.</code></pre>
+    </div>
+
+    <p>For queries that hit a <em>specific</em> path repeatedly, a plain B-tree on an expression beats either GIN:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 9.3</span> Expression index for hot paths</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE INDEX ON events ((payload -&gt;&gt; 'type'));
+SELECT * FROM events WHERE payload -&gt;&gt; 'type' = 'click';
+-- IndexScan on the B-tree — faster than GIN for this pattern.</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 9.3</span> JSONPath</h2>
+
+    <p>JSONPath (SQL/JSON, Postgres 12+) is a small query language for navigating into a document with filters, comparisons, and wildcards. The two operators that use it:</p>
+
+    <dl class="kv">
+      <dt>doc @? path</dt>  <dd>True if the path matches anything.</dd>
+      <dt>doc @@ path</dt>  <dd>True if the path's boolean predicate evaluates to true.</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 9.4</span> Path queries</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- payload: {"items": [{"sku":"A","qty":1},{"sku":"B","qty":7}]}
+
+-- "does any item have qty &gt; 5?"
+SELECT * FROM events
+WHERE  payload @? '$.items[*] ? (@.qty &gt; 5)';
+
+-- "all items have qty &gt;= 1"
+SELECT * FROM events
+WHERE  payload @@ '$.items[*].qty &gt;= 1';
+
+-- extract matching nodes as a set of rows
+SELECT jsonb_path_query(payload, '$.items[*] ? (@.qty &gt; 5)')
+FROM   events;</code></pre>
+    </div>
+
+    <p>JSONPath uses <code>$</code> for the root, <code>@</code> for the current node, <code>[*]</code> for "any array element", and <code>? (...)</code> for filter predicates. It's far more expressive than the simple containment operators, but the planner has weaker statistics for it — expect to want a GIN index to be useful.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 9.4</span> Construction and modification</h2>
+
+    <dl class="kv">
+      <dt>jsonb_build_object(k,v,...)</dt>  <dd>Build an object from alternating key/value arguments.</dd>
+      <dt>jsonb_build_array(...)</dt>       <dd>Build an array.</dd>
+      <dt>to_jsonb(any)</dt>                <dd>Convert any Postgres value (including a composite row) to <code>jsonb</code>.</dd>
+      <dt>row_to_json(row)</dt>             <dd>Older sibling; returns <code>json</code> not <code>jsonb</code>.</dd>
+      <dt>a || b</dt>                       <dd>Concatenate / shallow-merge objects. Right side wins on key conflicts.</dd>
+      <dt>doc - 'key'</dt>                  <dd>Remove a top-level key.</dd>
+      <dt>doc #- '{a,b}'</dt>               <dd>Remove a value at a path.</dd>
+      <dt>jsonb_set(doc, '{a,b}', new)</dt> <dd>Set the value at a path; creates intermediate objects if needed (with <code>create_missing</code>).</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 9.5</span> Updating a JSONB field in place</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">UPDATE users
+SET    prefs = jsonb_set(prefs, '{theme}', '"dark"', create_missing =&gt; true)
+WHERE  id = 7;
+
+-- shallow merge with the concatenation operator
+UPDATE users
+SET    prefs = prefs || '{"theme":"dark","notifications":true}'::jsonb
+WHERE  id = 7;</code></pre>
+    </div>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Whole-document rewrite</span>
+      <p>Every JSONB update rewrites the entire value. There is no in-place patch on disk. For a document that's a few kilobytes and changes one field, that overhead is invisible. For a multi-megabyte document with frequent small updates, it dominates — and you also lose the chance to do HOT updates because the new tuple won't fit on the page. If you're hitting that, the column is too big to be JSONB.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 9.5</span> Unnesting JSONB into rows</h2>
+
+    <p>Three functions convert document structure into ordinary rows you can join, group, and filter:</p>
+
+    <dl class="kv">
+      <dt>jsonb_each(doc)</dt>           <dd>Set of <code>(key, value)</code> pairs from a top-level object.</dd>
+      <dt>jsonb_array_elements(arr)</dt> <dd>One row per array element.</dd>
+      <dt>jsonb_to_recordset(arr)</dt>   <dd>One row per array element, projected into named columns.</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 9.6</span> Expanding an array of items</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- payload: [{"sku":"A","qty":1},{"sku":"B","qty":7}]
+
+SELECT e.id, item.sku, item.qty
+FROM   events e,
+       jsonb_to_recordset(e.payload) AS item(sku text, qty int)
+WHERE  item.qty &gt; 5;</code></pre>
+    </div>
+
+    <p>The comma in the <code>FROM</code> is an implicit <code>LATERAL CROSS JOIN</code> — the right side runs once per outer row, naturally. (See <a href="joins.html">Ch. IV</a>.)</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 9.6</span> When <em>not</em> to use JSONB</h2>
+
+    <p>JSONB is wonderful — and over-used. Move a field <em>out</em> of JSONB into a real column when:</p>
+
+    <ul>
+      <li>Every row has it (so the schemaless flexibility buys you nothing).</li>
+      <li>You query it often, especially in joins.</li>
+      <li>You constrain it (foreign keys, NOT NULL, CHECK).</li>
+      <li>It's a foreign key reference to another table.</li>
+      <li>It's part of an index that needs to support range queries (<code>created_at</code> in JSONB is almost always a mistake).</li>
+    </ul>
+
+    <p>Move a field <em>into</em> JSONB when it's genuinely sparse (present on a minority of rows), or when the shape is per-tenant / per-customer and changes faster than you can ship migrations.</p>
+
+    <p>A useful pattern: hybrid storage. Promote the hot fields to columns, keep the long tail in a <code>metadata jsonb</code> column. The relational engine handles what it's good at; JSONB carries the rest.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 9.7</span> A real-world recipe</h2>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 9.7</span> Event store with the right indexes</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE events (
+  id          bigserial PRIMARY KEY,
+  type        text      NOT NULL,        -- hot, promoted
+  user_id     bigint    NOT NULL,        -- hot, promoted
+  occurred_at timestamptz NOT NULL,
+  payload     jsonb     NOT NULL         -- everything else
+);
+
+-- queries by user + time:
+CREATE INDEX ON events (user_id, occurred_at DESC);
+
+-- queries by type + time:
+CREATE INDEX ON events (type, occurred_at DESC);
+
+-- containment queries on payload:
+CREATE INDEX ON events USING gin (payload jsonb_path_ops);
+
+-- one hot path frequently queried:
+CREATE INDEX ON events ((payload -&gt;&gt; 'campaign_id'));</code></pre>
+    </div>
+
+    <p>Three different index strategies, each appropriate for a different question. The promoted columns serve OLTP traffic; the GIN index serves ad-hoc analytics; the expression index serves the one report someone runs every hour.</p>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>JSONB, in one card</h3>
+    <dl>
+      <dt>jsonb &gt; json</dt>        <dd>Binary, indexable, deduplicated keys. Use jsonb.</dd>
+      <dt>-&gt;  vs  -&gt;&gt;</dt>          <dd><code>-&gt;</code> returns jsonb, <code>-&gt;&gt;</code> returns text. Same for <code>#&gt;</code> / <code>#&gt;&gt;</code>.</dd>
+      <dt>@&gt;</dt>                   <dd>Containment — the workhorse predicate. GIN-indexable.</dd>
+      <dt>? ?| ?&amp;</dt>              <dd>Top-level key existence.</dd>
+      <dt>jsonb_ops</dt>             <dd>Default GIN opclass. Supports @&gt;, ?, ?|, ?&amp;, path ops.</dd>
+      <dt>jsonb_path_ops</dt>        <dd>Smaller, faster — but @&gt; only.</dd>
+      <dt>Expression index</dt>      <dd>For hot specific paths: <code>((payload -&gt;&gt; 'k'))</code>. Beats GIN for equality.</dd>
+      <dt>@? / @@</dt>               <dd>JSONPath: navigate, filter, predicate.</dd>
+      <dt>jsonb_set / ||</dt>        <dd>Modify; whole document rewritten each time.</dd>
+      <dt>jsonb_to_recordset</dt>    <dd>Expand an array of objects into named columns.</dd>
+      <dt>Promote columns</dt>       <dd>Hot, always-present, joined, constrained — pull out of jsonb.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/datatype-json.html">Data Type: JSON Types</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/functions-json.html">JSON Functions and Operators</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/datatype-json.html#JSON-INDEXING">JSONB Indexing</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/functions-json.html#FUNCTIONS-SQLJSON-PATH">JSONPath / SQL/JSON Path Language</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="full-text-search.html">
+      <span class="label">← Previous</span>
+      <span class="title">VIII · Full-text search</span>
+    </a>
+    <a class="next" href="transactions.html">
+      <span class="label">Next →</span>
+      <span class="title">X · Transactions</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

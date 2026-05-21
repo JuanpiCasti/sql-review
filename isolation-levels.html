@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Isolation Levels — Postgres Study</title>
+  <meta name="description" content="Read Committed, Repeatable Read, Serializable, SSI, and the four anomalies they prevent.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="isolation-levels.html" aria-current="page">XI · Isolation</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">11</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter XI · Concurrency</span>
+      <h1>Isolation levels, <em>or, what your snapshot sees</em></h1>
+      <p class="standfirst">The contract Postgres offers between concurrent transactions — and the four anomalies it lets you choose to prevent.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede"><strong>Isolation</strong> is the I in ACID. It is the database's answer to a single, slippery question: when many transactions run at once, which of each other's effects should they be allowed to see? The SQL standard names four levels — Read Uncommitted, Read Committed, Repeatable Read, Serializable — defined by which <em>anomalies</em> each one forbids. Postgres implements three of them (it has no dirty reads, ever) using a single underlying mechanism: multi-version snapshots.</p>
+  </section>
+
+  <aside class="marginalia">
+    <span class="label">A note</span>
+    Postgres accepts the syntax <code>READ UNCOMMITTED</code> but treats it as <code>READ COMMITTED</code>. There is no way to see another transaction's uncommitted writes in Postgres — a property worth a paragraph of its own in interviews.
+  </aside>
+
+  <section>
+    <h2><span class="num">§ 11.1</span> The four anomalies</h2>
+
+    <p>The standard defines isolation negatively: a level is described by what it forbids. Four phenomena have names worth memorising.</p>
+
+    <dl class="kv">
+      <dt>Dirty read</dt>
+      <dd>Reading a row another transaction has written but not yet committed. <em>Never happens in Postgres at any level.</em></dd>
+      <dt>Non-repeatable read</dt>
+      <dd>Reading the same row twice in one transaction and getting two different values, because a concurrent transaction committed an <code>UPDATE</code> in between.</dd>
+      <dt>Phantom read</dt>
+      <dd>Re-running the same range query and seeing rows that weren't there before, because a concurrent transaction committed an <code>INSERT</code> matching the predicate.</dd>
+      <dt>Serialization anomaly</dt>
+      <dd>A set of transactions that each ran successfully produces a result that <em>could not</em> have been produced by running them one at a time in any order. The subtle one. Examples below.</dd>
+    </dl>
+
+    <div class="data-table">
+      <p class="caption">Which anomalies each Postgres level prevents</p>
+      <table class="data">
+        <thead><tr><th>Level</th><th>Dirty read</th><th>Non-repeatable read</th><th>Phantom read</th><th>Serialization anomaly</th></tr></thead>
+        <tbody>
+          <tr><td>Read Uncommitted (≡ Read Committed)</td><td>✓ prevented</td><td>possible</td><td>possible</td><td>possible</td></tr>
+          <tr><td>Read Committed (default)</td>          <td>✓ prevented</td><td>possible</td><td>possible</td><td>possible</td></tr>
+          <tr><td>Repeatable Read</td>                   <td>✓ prevented</td><td>✓ prevented</td><td>✓ prevented*</td><td>possible</td></tr>
+          <tr><td>Serializable</td>                      <td>✓ prevented</td><td>✓ prevented</td><td>✓ prevented</td><td>✓ prevented</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <aside class="marginalia">
+      <span class="label">*</span>
+      The standard allows phantom reads at Repeatable Read; Postgres's snapshot-based implementation prevents them as a side effect. This is stricter than the standard requires.
+    </aside>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 11.2</span> Read Committed — the default</h2>
+
+    <p>At <strong>Read Committed</strong>, every <em>statement</em> sees a fresh snapshot of the database as of the moment that statement began. Two statements in the same transaction therefore can see different things, because committed work from other sessions slips in between them.</p>
+
+    <p>This is what the non-repeatable read anomaly looks like in practice. Session A reads the same row twice and sees two different values:</p>
+
+    <div class="sessions">
+      <div class="col-header">t</div>
+      <div class="col-header">Session A</div>
+      <div class="col-header">Session B</div>
+
+      <div class="t">t1</div>
+      <div class="a"><span class="kw">BEGIN</span>;</div>
+      <div class="b"></div>
+
+      <div class="t">t2</div>
+      <div class="a"><span class="kw">SELECT</span> balance <span class="kw">FROM</span> accounts <span class="kw">WHERE</span> id=1; <span class="com">-- 100</span></div>
+      <div class="b"></div>
+
+      <div class="t">t3</div>
+      <div class="a"></div>
+      <div class="b"><span class="kw">UPDATE</span> accounts <span class="kw">SET</span> balance=150 <span class="kw">WHERE</span> id=1;<br><span class="kw">COMMIT</span>;</div>
+
+      <div class="t">t4</div>
+      <div class="a"><span class="kw">SELECT</span> balance <span class="kw">FROM</span> accounts <span class="kw">WHERE</span> id=1; <span class="com">-- 150 !</span></div>
+      <div class="b"></div>
+
+      <div class="t">t5</div>
+      <div class="a"><span class="kw">COMMIT</span>;</div>
+      <div class="b"></div>
+    </div>
+
+    <p>Each statement in A is internally consistent (it sees a single point-in-time snapshot), but successive statements see successive snapshots. For most OLTP workloads this is exactly what you want — readers never block writers, writers never block readers, and stale data is bounded to the duration of a single statement.</p>
+
+    <div class="callout note">
+      <span class="callout-label">A subtle point</span>
+      <p>If an <code>UPDATE</code> or <code>DELETE</code> at Read Committed finds that the row it's about to modify has been changed by a concurrent transaction that has since committed, Postgres does <em>not</em> abort. It re-reads the latest committed version, re-evaluates the <code>WHERE</code> clause against it, and applies the update if it still matches. This is called the <em>EvalPlanQual</em> retry. It keeps Read Committed usable, but it means a single <code>UPDATE</code> can see a different snapshot than the surrounding <code>SELECT</code>s.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 11.3</span> Repeatable Read — snapshot isolation</h2>
+
+    <p>At <strong>Repeatable Read</strong>, the snapshot is taken once, at the first non-transaction-control statement of the transaction, and every subsequent read in the transaction sees that same snapshot. The non-repeatable read from § 11.2 cannot happen: A's second <code>SELECT</code> returns <code>100</code>, not <code>150</code>, because B's commit happened after A's snapshot.</p>
+
+    <p>Postgres's Repeatable Read is what the literature calls <strong>snapshot isolation</strong>. It also prevents the standard's phantom read — a re-run of <code>SELECT count(*) FROM orders WHERE total &gt; 100</code> returns the same count both times.</p>
+
+    <p>What it does <em>not</em> prevent is the serialization anomaly. The canonical example is the <strong>write skew</strong>:</p>
+
+    <div class="sessions">
+      <div class="col-header">t</div>
+      <div class="col-header">Session A (on call: alice)</div>
+      <div class="col-header">Session B (on call: bob)</div>
+
+      <div class="t">t1</div>
+      <div class="a"><span class="kw">BEGIN</span> <span class="kw">ISOLATION LEVEL REPEATABLE READ</span>;</div>
+      <div class="b"><span class="kw">BEGIN</span> <span class="kw">ISOLATION LEVEL REPEATABLE READ</span>;</div>
+
+      <div class="t">t2</div>
+      <div class="a"><span class="kw">SELECT</span> count(*) <span class="kw">FROM</span> doctors <span class="kw">WHERE</span> on_call; <span class="com">-- 2</span></div>
+      <div class="b"><span class="kw">SELECT</span> count(*) <span class="kw">FROM</span> doctors <span class="kw">WHERE</span> on_call; <span class="com">-- 2</span></div>
+
+      <div class="t">t3</div>
+      <div class="a"><span class="kw">UPDATE</span> doctors <span class="kw">SET</span> on_call=<span class="kw">false</span> <span class="kw">WHERE</span> name=<span class="com">'alice'</span>;</div>
+      <div class="b"><span class="kw">UPDATE</span> doctors <span class="kw">SET</span> on_call=<span class="kw">false</span> <span class="kw">WHERE</span> name=<span class="com">'bob'</span>;</div>
+
+      <div class="t">t4</div>
+      <div class="a"><span class="kw">COMMIT</span>; <span class="ok">-- ok</span></div>
+      <div class="b"><span class="kw">COMMIT</span>; <span class="ok">-- ok</span></div>
+
+      <div class="t"></div>
+      <div class="a" colspan="2"></div>
+      <div class="b" style="grid-column: 2 / -1; padding-top: 0.8em;"><span class="err">Result: no doctors on call. Each transaction was internally consistent; together they broke an invariant ("at least one doctor must always be on call") that neither transaction violated on its own.</span></div>
+    </div>
+
+    <p>Each transaction read <code>2</code> from the same snapshot, decided it was safe to take one off, and committed. There is no serial schedule of A and B that produces this outcome, but RR allows it because neither transaction wrote to a row the other read.</p>
+
+    <aside class="marginalia">
+      <span class="label">When RR is right</span>
+      Repeatable Read is the right default for reports, dashboards, exports — anything that runs many <code>SELECT</code>s and needs them all to agree, but doesn't write data that depends on what it read.
+    </aside>
+
+    <p>At Repeatable Read, two transactions that try to modify the <em>same</em> row are still serialised: the second one waits for the first, and if the first commits, the second aborts with <code>ERROR: could not serialize access due to concurrent update</code>. Your application must catch this SQLSTATE (<code>40001</code>) and retry the transaction from the start.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 11.4</span> Serializable — SSI</h2>
+
+    <p><strong>Serializable</strong> in Postgres is implemented with <em>Serializable Snapshot Isolation</em> (SSI, Cahill 2008). It begins as ordinary snapshot isolation, then monitors read–write dependencies between concurrent transactions in the background. If it detects a pattern that <em>could</em> produce an anomaly — a "dangerous structure" of <code>rw</code>-antidependencies — it aborts one of the transactions with the same <code>40001</code> serialization failure.</p>
+
+    <p>Re-run the doctors example under Serializable and one of the two commits will fail:</p>
+
+    <div class="sessions">
+      <div class="col-header">t</div>
+      <div class="col-header">Session A</div>
+      <div class="col-header">Session B</div>
+
+      <div class="t">t1</div>
+      <div class="a"><span class="kw">BEGIN</span> <span class="kw">ISOLATION LEVEL SERIALIZABLE</span>;</div>
+      <div class="b"><span class="kw">BEGIN</span> <span class="kw">ISOLATION LEVEL SERIALIZABLE</span>;</div>
+
+      <div class="t">t2</div>
+      <div class="a"><span class="kw">SELECT</span> count(*) <span class="kw">FROM</span> doctors <span class="kw">WHERE</span> on_call; <span class="com">-- 2</span></div>
+      <div class="b"><span class="kw">SELECT</span> count(*) <span class="kw">FROM</span> doctors <span class="kw">WHERE</span> on_call; <span class="com">-- 2</span></div>
+
+      <div class="t">t3</div>
+      <div class="a"><span class="kw">UPDATE</span> doctors <span class="kw">SET</span> on_call=<span class="kw">false</span> <span class="kw">WHERE</span> name=<span class="com">'alice'</span>;</div>
+      <div class="b"><span class="kw">UPDATE</span> doctors <span class="kw">SET</span> on_call=<span class="kw">false</span> <span class="kw">WHERE</span> name=<span class="com">'bob'</span>;</div>
+
+      <div class="t">t4</div>
+      <div class="a"><span class="kw">COMMIT</span>; <span class="ok">-- ok</span></div>
+      <div class="b"><span class="kw">COMMIT</span>;<br><span class="err">ERROR: could not serialize access<br>due to read/write dependencies<br>among transactions</span></div>
+    </div>
+
+    <p>The error message even suggests the remedy: "The transaction might succeed if retried." Retry-on-40001 is the application-level contract that Serializable requires.</p>
+
+    <div class="callout warning">
+      <span class="callout-label">The price</span>
+      <p>SSI tracks <em>predicate locks</em> on every row, page, and index range a transaction reads. Under high contention this overhead is real, and false positives — aborts of transactions that would have been safe — are part of the design. Use Serializable when correctness justifies it (financial postings, multi-row invariants); otherwise prefer Read Committed with explicit row locks for the rows you mean to protect.</p>
+    </div>
+
+    <p>Two more notes:</p>
+
+    <ul>
+      <li><code>SERIALIZABLE READ ONLY DEFERRABLE</code> waits for a "safe snapshot" before starting, after which it will never abort. Perfect for long analytic queries on a busy OLTP database.</li>
+      <li>SSI is per-database. Cross-database transactions (using foreign data wrappers) fall back to snapshot isolation regardless of declared level.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 11.5</span> Choosing a level</h2>
+
+    <p>A practical decision rule:</p>
+
+    <ul>
+      <li><strong>Read Committed</strong> for everything OLTP by default. It's what your migrations, your background jobs, and 95% of your application code want.</li>
+      <li><strong>Repeatable Read</strong> when one transaction issues many <code>SELECT</code>s that must agree (reports, dashboard pages, exports, replication tooling) <em>and</em> doesn't write anything dependent on what it read.</li>
+      <li><strong>Serializable</strong> when you have multi-row invariants — counts, totals, "at least one of X" — that two concurrent writers could each independently uphold while jointly violating. Be prepared to retry.</li>
+    </ul>
+
+    <p>You change the level per-transaction (<code>BEGIN ISOLATION LEVEL …</code>), per-session (<code>SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL …</code>), or globally via the GUC <code>default_transaction_isolation</code>.</p>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Isolation, in one card</h3>
+    <dl>
+      <dt>Read Committed</dt>     <dd>Default. Each <em>statement</em> sees a fresh snapshot. Non-repeatable reads possible.</dd>
+      <dt>Repeatable Read</dt>    <dd>One snapshot for the whole transaction. Prevents non-repeatable + phantom reads. Allows write skew.</dd>
+      <dt>Serializable</dt>       <dd>RR + SSI predicate tracking. Prevents all anomalies; aborts on dangerous patterns.</dd>
+      <dt>40001 / 40P01</dt>      <dd>Serialization failure / deadlock. <em>Always retry the whole transaction.</em></dd>
+      <dt>Dirty reads</dt>        <dd>Impossible in Postgres at any level.</dd>
+      <dt>Set per-tx</dt>         <dd><code>BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY DEFERRABLE</code></dd>
+      <dt>Set globally</dt>       <dd><code>ALTER SYSTEM SET default_transaction_isolation = 'repeatable read'</code></dd>
+      <dt>EvalPlanQual</dt>       <dd>At RC, a colliding <code>UPDATE</code> silently re-reads the latest committed row and re-checks <code>WHERE</code>.</dd>
+      <dt>SSI is per-database</dt><dd>FDW / cross-db transactions fall back to snapshot isolation.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/transaction-iso.html">Concurrency Control: Transaction Isolation</a></li>
+      <li><a href="https://wiki.postgresql.org/wiki/SSI">PostgreSQL Wiki: Serializable Snapshot Isolation</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-set-transaction.html">SQL: SET TRANSACTION</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="transactions.html">
+      <span class="label">← Previous</span>
+      <span class="title">X · Transactions</span>
+    </a>
+    <a class="next" href="mvcc.html">
+      <span class="label">Next →</span>
+      <span class="title">XII · MVCC &amp; VACUUM</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

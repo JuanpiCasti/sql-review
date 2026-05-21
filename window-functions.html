@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Window Functions — Postgres Study</title>
+  <meta name="description" content="OVER, PARTITION BY, frame clauses, RANK / DENSE_RANK / ROW_NUMBER, LAG / LEAD, and named windows.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="window-functions.html" aria-current="page">VI · Windows</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">06</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter VI · Querying</span>
+      <h1>Window functions, <em>or, aggregation without collapse</em></h1>
+      <p class="standfirst">Compute per-row values that depend on other rows — running totals, ranks, lags, moving averages — without losing the rows themselves. The single most powerful clause in SQL.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">A <strong>window function</strong> is an aggregate that returns one value <em>per input row</em> instead of one value per group. It runs over a <em>window</em> — a partitioned, ordered slice of the result set — and each row sees the aggregate computed over its own slice. Where <code>GROUP BY</code> collapses rows, <code>OVER</code> preserves them. Once you internalise this difference, half of "this needs a subquery" turns out to need only a single <code>OVER</code> clause.</p>
+  </section>
+
+  <aside class="marginalia">
+    <span class="label">Sample data</span>
+    <code>sales(salesperson, region, sold_at, revenue)</code>, a handful of rows per region. Every example below references it.
+  </aside>
+
+  <section>
+    <h2><span class="num">§ 6.1</span> Anatomy of the OVER clause</h2>
+
+    <p>The shape:</p>
+
+<pre class="language-sql" data-lang="sql"><code class="language-sql">function(args) OVER (
+  PARTITION BY  partition_expr [, ...]    -- split rows into independent groups
+  ORDER BY      order_expr     [, ...]    -- order within each partition
+  frame_clause                            -- which neighbouring rows count
+)</code></pre>
+
+    <p>All three pieces are optional. Omit <code>PARTITION BY</code> and the whole result is one partition. Omit <code>ORDER BY</code> and the rows have no defined order inside the partition. Omit the frame and Postgres uses a default frame that depends on whether <code>ORDER BY</code> is present (the source of the famous <code>LAST_VALUE</code> trap — § 6.5).</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 6.1</span> Running total per region</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region,
+       sold_at,
+       revenue,
+       sum(revenue) OVER (PARTITION BY region ORDER BY sold_at)
+         AS running_total
+FROM   sales
+ORDER  BY region, sold_at;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>region</th><th>sold_at</th><th>revenue</th><th>running_total</th></tr></thead>
+          <tbody>
+            <tr><td>EU</td><td>2026-01-04</td><td class="num">100</td><td class="num">100</td></tr>
+            <tr><td>EU</td><td>2026-01-09</td><td class="num"> 80</td><td class="num">180</td></tr>
+            <tr><td>EU</td><td>2026-01-15</td><td class="num">120</td><td class="num">300</td></tr>
+            <tr><td>US</td><td>2026-01-02</td><td class="num"> 90</td><td class="num"> 90</td></tr>
+            <tr><td>US</td><td>2026-01-11</td><td class="num">140</td><td class="num">230</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>Each region's running total restarts at the partition boundary; within a region, the sum accumulates in <code>sold_at</code> order. No <code>GROUP BY</code>, no self-join.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 6.2</span> The ranking family</h2>
+
+    <p>Three almost-identical functions that differ only in how they treat ties:</p>
+
+    <dl class="kv">
+      <dt>ROW_NUMBER()</dt><dd>Always 1, 2, 3, … even on ties. Ties broken arbitrarily by the database.</dd>
+      <dt>RANK()</dt>      <dd>Tied rows share a rank; the next rank <em>skips</em> the count of ties. 1, 2, 2, 4.</dd>
+      <dt>DENSE_RANK()</dt><dd>Tied rows share a rank; the next rank does <em>not</em> skip. 1, 2, 2, 3.</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 6.2</span> Ranking salespeople within each region by revenue</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region,
+       salesperson,
+       revenue,
+       row_number() OVER w AS rn,
+       rank()       OVER w AS rnk,
+       dense_rank() OVER w AS drnk
+FROM   sales
+WINDOW w AS (PARTITION BY region ORDER BY revenue DESC)
+ORDER  BY region, revenue DESC;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result — note the tied 200s</p>
+        <table class="result">
+          <thead><tr><th>region</th><th>salesperson</th><th>revenue</th><th>rn</th><th>rnk</th><th>drnk</th></tr></thead>
+          <tbody>
+            <tr><td>EU</td><td>Ada</td>   <td class="num">300</td><td class="num">1</td><td class="num">1</td><td class="num">1</td></tr>
+            <tr><td>EU</td><td>Beni</td>  <td class="num">200</td><td class="num">2</td><td class="num">2</td><td class="num">2</td></tr>
+            <tr><td>EU</td><td>Cleo</td>  <td class="num">200</td><td class="num">3</td><td class="num">2</td><td class="num">2</td></tr>
+            <tr><td>EU</td><td>Dario</td> <td class="num">150</td><td class="num">4</td><td class="num">4</td><td class="num">3</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The choice:</p>
+
+    <ul>
+      <li><strong>ROW_NUMBER</strong> for "give me the top 1 / top N per group" when you don't care which of equally-good rows you get.</li>
+      <li><strong>RANK</strong> for Olympic-style scoring — two silver medallists, no bronze.</li>
+      <li><strong>DENSE_RANK</strong> when you want to <em>count distinct ranks</em>. After "1, 2, 2, 3" the highest rank equals the number of distinct values.</li>
+    </ul>
+
+    <p>Two more in the family, less common:</p>
+
+    <dl class="kv">
+      <dt>PERCENT_RANK()</dt><dd><code>(rank - 1) / (total - 1)</code>. Maps the partition to <code>[0, 1]</code>.</dd>
+      <dt>NTILE(n)</dt>      <dd>Bucket the partition into <code>n</code> roughly-equal groups, numbered 1..n. Quartiles, deciles, percentile buckets.</dd>
+      <dt>CUME_DIST()</dt>   <dd>Cumulative distribution: rows ≤ current / total.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 6.3</span> Top-N per group via window functions</h2>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 6.3</span> Top 2 salespeople per region</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT *
+FROM (
+  SELECT region, salesperson, revenue,
+         row_number() OVER (PARTITION BY region ORDER BY revenue DESC) AS rn
+  FROM sales
+) t
+WHERE rn &lt;= 2;</code></pre>
+    </div>
+
+    <p>Why the subquery? Window functions are computed <em>after</em> <code>WHERE</code> and <code>GROUP BY</code> but <em>before</em> the outer <code>SELECT</code>'s list. You can't filter on <code>rn</code> in the same query that defines it — you need an outer scope. (Compare with the <code>LATERAL</code> spelling in <a href="joins.html">Ch. IV § 4.7</a>: for small N and many groups, <code>LATERAL</code> with <code>LIMIT</code> usually wins; for moderate N or a small number of groups, the window-function form is fine.)</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 6.4</span> LAG and LEAD</h2>
+
+    <p><code>lag(x, offset, default)</code> returns <code>x</code> from the row <code>offset</code> positions <em>before</em> the current row; <code>lead</code> looks forward. Both are invaluable for differences, gaps, and state-change detection.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 6.4</span> Daily delta in stock price</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT ticker,
+       day,
+       price,
+       price - lag(price) OVER w AS d_price,
+       100 * (price - lag(price) OVER w) / lag(price) OVER w AS pct_change
+FROM   prices
+WINDOW w AS (PARTITION BY ticker ORDER BY day)
+ORDER  BY ticker, day;</code></pre>
+    </div>
+
+    <p>The first row of each partition has no preceding row; <code>lag</code> returns <code>NULL</code> there unless you pass a default: <code>lag(price, 1, price) OVER w</code> would return the current price for the first row, making the delta zero.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 6.5</span> The frame clause</h2>
+
+    <p>Inside each partition, the <em>frame</em> defines which rows the aggregate sees for the current row. This is where window functions get powerful — and where they confuse people most.</p>
+
+    <p>The full syntax has three parts:</p>
+
+<pre class="language-sql" data-lang="sql"><code class="language-sql">{ROWS | RANGE | GROUPS} BETWEEN frame_start AND frame_end
+  [EXCLUDE {CURRENT ROW | GROUP | TIES | NO OTHERS}]</code></pre>
+
+    <p>Where each endpoint is one of:</p>
+
+    <dl class="kv">
+      <dt>UNBOUNDED PRECEDING</dt> <dd>The first row of the partition.</dd>
+      <dt>n PRECEDING</dt>          <dd><code>n</code> rows / units before current.</dd>
+      <dt>CURRENT ROW</dt>          <dd>The current row (interpretation depends on mode).</dd>
+      <dt>n FOLLOWING</dt>          <dd><code>n</code> rows / units after current.</dd>
+      <dt>UNBOUNDED FOLLOWING</dt> <dd>The last row of the partition.</dd>
+    </dl>
+
+    <p>And the three modes:</p>
+
+    <dl class="kv">
+      <dt>ROWS</dt>   <dd>Physical row count. <code>n PRECEDING</code> means literally <code>n</code> rows back.</dd>
+      <dt>RANGE</dt>  <dd>Logical offset on the <code>ORDER BY</code> value. <code>n PRECEDING</code> means all rows whose value is within <code>n</code> of the current row's value.</dd>
+      <dt>GROUPS</dt> <dd>Peer-group offset. <code>n PRECEDING</code> means <code>n</code> distinct <code>ORDER BY</code> values back.</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 6.5</span> Seven-day moving average</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT day,
+       sales,
+       avg(sales) OVER (
+         ORDER BY day
+         RANGE BETWEEN interval '6 days' PRECEDING AND CURRENT ROW
+       ) AS ma7
+FROM   daily_sales;</code></pre>
+    </div>
+
+    <p>Use <code>RANGE</code> with an interval when there might be gaps in the dates — the average is over the past seven calendar days, not the past seven recorded rows.</p>
+
+    <div class="callout pitfall">
+      <span class="callout-label">The LAST_VALUE trap</span>
+      <p>The default frame when <code>ORDER BY</code> is present is <code>RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW</code> — <em>not</em> the full partition. Which means <code>last_value(x) OVER (PARTITION BY g ORDER BY t)</code> returns the value at the current row, not the value at the partition's last row.</p>
+      <p>To get the actual last value, you must spell out the frame:</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">last_value(x) OVER (
+  PARTITION BY g
+  ORDER BY t
+  ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+)</code></pre>
+      <p>Or use <code>max(x)</code> if the last is also the max, or restructure the query with a subquery and <code>ORDER BY t DESC LIMIT 1</code>.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 6.6</span> Named windows</h2>
+
+    <p>When several functions share the same window, define it once with <code>WINDOW</code> and refer to it by name. Ex. 6.2 and 8.4 already used this. The full grammar lets later windows <em>extend</em> earlier ones:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 6.6</span> Inheriting a window</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region, salesperson, revenue,
+       rank()       OVER w1                 AS rnk,
+       sum(revenue) OVER w2                 AS running_total
+FROM   sales
+WINDOW
+  w1 AS (PARTITION BY region ORDER BY revenue DESC),
+  w2 AS (w1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW);</code></pre>
+    </div>
+
+    <p><code>w2</code> reuses <code>w1</code>'s <code>PARTITION BY</code> and <code>ORDER BY</code>, adding only a frame.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 6.7</span> first_value, last_value, nth_value</h2>
+
+    <p>Three positional functions, each returning a value from a specific row within the frame:</p>
+
+    <dl class="kv">
+      <dt>first_value(x)</dt> <dd>The first row of the frame.</dd>
+      <dt>last_value(x)</dt>  <dd>The last row of the frame. (Remember the trap.)</dd>
+      <dt>nth_value(x, n)</dt><dd>The <code>n</code>th row (1-indexed); <code>NULL</code> if the frame is shorter.</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 6.7</span> Best-revenue salesperson alongside each row, per region</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT region, salesperson, revenue,
+       first_value(salesperson) OVER (
+         PARTITION BY region ORDER BY revenue DESC
+       ) AS top_in_region
+FROM   sales;</code></pre>
+    </div>
+
+    <p>For <em>this</em> use (the maximum value across the partition) <code>first_value</code> with <code>ORDER BY … DESC</code> works correctly with the default frame, because the first row of <code>UNBOUNDED PRECEDING … CURRENT ROW</code> in the first row of the partition is itself.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 6.8</span> Execution model and indexes</h2>
+
+    <p>A query with window functions executes in this order:</p>
+
+    <ol>
+      <li><code>FROM</code> / <code>JOIN</code> produces the row source.</li>
+      <li><code>WHERE</code> filters it.</li>
+      <li><code>GROUP BY</code> / <code>HAVING</code> aggregate.</li>
+      <li><strong>Window functions</strong> compute per-row over their windows.</li>
+      <li><code>SELECT</code> projects.</li>
+      <li><code>DISTINCT</code>, <code>ORDER BY</code>, <code>LIMIT</code>.</li>
+    </ol>
+
+    <p>An index on <code>(partition_cols, order_cols)</code> lets Postgres feed the WindowAgg node already-sorted input and skip the sort. For Ex. 6.1, an index on <code>(region, sold_at)</code> turns the plan from <em>Sort → WindowAgg</em> into <em>IndexScan → WindowAgg</em>.</p>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Window functions, in one card</h3>
+    <dl>
+      <dt>OVER ()</dt>                <dd>Aggregate over the entire result set, per-row.</dd>
+      <dt>PARTITION BY</dt>           <dd>Independent windows; the aggregate restarts at each partition.</dd>
+      <dt>ROW_NUMBER</dt>             <dd>1, 2, 3 — always. Ties broken arbitrarily.</dd>
+      <dt>RANK</dt>                   <dd>Ties share a rank; next rank skips. 1, 2, 2, 4.</dd>
+      <dt>DENSE_RANK</dt>             <dd>Ties share a rank; next rank doesn't skip. 1, 2, 2, 3.</dd>
+      <dt>NTILE(n)</dt>               <dd>Bucket into <code>n</code> equal-ish groups. Use for quartiles/deciles.</dd>
+      <dt>LAG / LEAD</dt>             <dd>Value from offset rows back / forward. Pass a default for partition edges.</dd>
+      <dt>FIRST_VALUE / LAST_VALUE</dt><dd>Positional. <em>LAST_VALUE needs an explicit frame to do what you expect.</em></dd>
+      <dt>Default frame</dt>          <dd><code>RANGE UNBOUNDED PRECEDING … CURRENT ROW</code> when ORDER BY present.</dd>
+      <dt>WINDOW name AS (…)</dt>     <dd>Define once, reuse. Later windows can extend earlier ones.</dd>
+      <dt>Index strategy</dt>         <dd>Index on (partition_cols, order_cols) avoids the sort before WindowAgg.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/tutorial-window.html">Tutorial: Window Functions</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/functions-window.html">Window Functions reference</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-expressions.html#SYNTAX-WINDOW-FUNCTIONS">SQL Syntax: Window Function Calls</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="aggregates-group-by.html">
+      <span class="label">← Previous</span>
+      <span class="title">V · Aggregates &amp; GROUP BY</span>
+    </a>
+    <a class="next" href="ctes.html">
+      <span class="label">Next →</span>
+      <span class="title">VII · CTEs &amp; recursion</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

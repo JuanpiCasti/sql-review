@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Joins — Postgres Study</title>
+  <meta name="description" content="Inner, outer, cross, lateral, semi, anti — every join Postgres supports.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="joins.html" aria-current="page">IV · Joins</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">04</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter IV · Querying</span>
+      <h1>Joins, <em>or, putting tables together</em></h1>
+      <p class="standfirst">Every way Postgres lets you combine two relations: inner, the four outer flavours, cross, lateral, and the two implicit kinds — semi and anti — you write with <code>EXISTS</code>.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">A <strong>join</strong> takes two tables and produces a third whose rows are formed from pairs of input rows that satisfy some condition. Almost every interesting SQL query is a join in disguise — even the ones written with <code>IN</code>, <code>EXISTS</code>, or scalar subqueries. Learning the algebra explicitly means you can write the same query four different ways and know which one the planner will run fastest.</p>
+  </section>
+
+  <aside class="marginalia">
+    <span class="label">Sample schema</span>
+    Throughout this chapter:
+    <code>authors(id, name)</code> with three rows,
+    <code>books(id, author_id, title)</code> with four rows — one author has no book, one book has no author (NULL <code>author_id</code>).
+  </aside>
+
+  <section>
+    <h2><span class="num">§ 4.1</span> The five named joins, at a glance</h2>
+
+    <div class="venn-grid">
+      <div class="venn-card">
+        <div class="venn fill-inter">
+          <div class="c l"></div><div class="c r"></div>
+          <div class="fill"></div>
+        </div>
+        <div class="name">INNER</div>
+        <div class="desc">matches in both</div>
+      </div>
+      <div class="venn-card">
+        <div class="venn fill-left-all">
+          <div class="fill"></div>
+          <div class="c l"></div><div class="c r"></div>
+        </div>
+        <div class="name">LEFT</div>
+        <div class="desc">all left, matched right</div>
+      </div>
+      <div class="venn-card">
+        <div class="venn fill-right-all">
+          <div class="fill"></div>
+          <div class="c l"></div><div class="c r"></div>
+        </div>
+        <div class="name">RIGHT</div>
+        <div class="desc">all right, matched left</div>
+      </div>
+      <div class="venn-card">
+        <div class="venn fill-both">
+          <div class="fill"></div>
+          <div class="c l"></div><div class="c r"></div>
+        </div>
+        <div class="name">FULL OUTER</div>
+        <div class="desc">all rows on either side</div>
+      </div>
+      <div class="venn-card">
+        <div class="venn fill-both">
+          <div class="fill"></div>
+          <div class="c l"></div><div class="c r"></div>
+        </div>
+        <div class="name">CROSS</div>
+        <div class="desc">every pair (cartesian)</div>
+      </div>
+    </div>
+
+    <p>Outer joins fill in <code>NULL</code> for columns from the side that had no match. Inner joins drop unmatched rows. Cross joins ignore matching entirely — they produce <code>|L| × |R|</code> rows.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.2</span> INNER JOIN</h2>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 4.1</span> Books with their author</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT b.title, a.name AS author
+FROM   books b
+JOIN   authors a ON a.id = b.author_id
+ORDER  BY b.id;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result — the book with NULL author_id and the author with no books are both gone</p>
+        <table class="result">
+          <thead><tr><th>title</th><th>author</th></tr></thead>
+          <tbody>
+            <tr><td>The Stranger</td><td>Camus</td></tr>
+            <tr><td>The Plague</td><td>Camus</td></tr>
+            <tr><td>Mrs Dalloway</td><td>Woolf</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The bare keyword <code>JOIN</code> always means <code>INNER JOIN</code>. The two are interchangeable — write whichever is clearer in context. (I prefer the explicit <code>INNER</code> when the same query also has outer joins, for visual symmetry.)</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.3</span> LEFT JOIN (and its mirror)</h2>
+
+    <div class="example split">
+      <div>
+        <p class="caption"><span class="num">Ex. 4.2</span> Every author, with their books if any</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT a.name, b.title
+FROM   authors a
+LEFT   JOIN books b
+  ON   b.author_id = a.id
+ORDER  BY a.name, b.id;</code></pre>
+      </div>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>name</th><th>title</th></tr></thead>
+          <tbody>
+            <tr><td>Camus</td><td>The Stranger</td></tr>
+            <tr><td>Camus</td><td>The Plague</td></tr>
+            <tr><td>Sappho</td><td class="null">NULL</td></tr>
+            <tr><td>Woolf</td><td>Mrs Dalloway</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>Sappho appears with a <code>NULL</code> title — she's preserved by the <code>LEFT</code>, then her unmatched right-hand columns are filled with nulls. The book with <code>NULL author_id</code> is still absent: only the left side is preserved.</p>
+
+    <p><code>RIGHT JOIN</code> is identical with the sides reversed. By convention, write everything as <code>LEFT JOIN</code> and reorder the tables — it's the same query, and one direction of asymmetry is easier to read.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.4</span> FULL OUTER JOIN</h2>
+
+    <div class="example split">
+      <div>
+        <p class="caption"><span class="num">Ex. 4.3</span> Everything from both sides</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT a.name, b.title
+FROM   authors a
+FULL   OUTER JOIN books b
+  ON   b.author_id = a.id;</code></pre>
+      </div>
+      <div class="result-wrap">
+        <p class="result-caption">Result</p>
+        <table class="result">
+          <thead><tr><th>name</th><th>title</th></tr></thead>
+          <tbody>
+            <tr><td>Camus</td><td>The Stranger</td></tr>
+            <tr><td>Camus</td><td>The Plague</td></tr>
+            <tr><td>Sappho</td><td class="null">NULL</td></tr>
+            <tr><td>Woolf</td><td>Mrs Dalloway</td></tr>
+            <tr><td class="null">NULL</td><td>Anon. fragments</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>Sappho (unmatched author) and the anonymous book (unmatched book) both appear, each with nulls on the opposing side. <code>FULL OUTER</code> is rare in OLTP but invaluable for reconciliation queries — diffing two snapshots of the same data.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.5</span> CROSS JOIN</h2>
+
+    <p>Every row of the left side paired with every row of the right side, with no condition. Three authors × four books = twelve rows. Usually a mistake — but occasionally exactly what you want:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 4.4</span> Generating a date×product matrix</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT d::date, p.id
+FROM   generate_series(date '2026-01-01', date '2026-01-07', interval '1 day') d
+CROSS  JOIN products p
+ORDER  BY d, p.id;</code></pre>
+    </div>
+
+    <p>The classic use: ensure a report has a row for every (date, dimension) combination even when there were no events, then <code>LEFT JOIN</code> the events onto it.</p>
+
+    <p>Two equivalent spellings: <code>FROM a, b</code> (the old comma syntax) and <code>FROM a CROSS JOIN b</code> are the same query. Prefer the explicit form so a missing <code>WHERE</code> clause doesn't silently produce a cartesian product.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.6</span> ON vs USING vs NATURAL</h2>
+
+    <p>Three ways to write the join condition:</p>
+
+    <dl class="kv">
+      <dt>ON expr</dt>     <dd>Arbitrary predicate. The general case.</dd>
+      <dt>USING (cols)</dt> <dd>Shortcut for <code>ON a.c = b.c</code> when both sides have a column named <code>c</code>. The result has <em>one</em> column <code>c</code>, not two — useful when you'd otherwise <code>SELECT *</code>.</dd>
+      <dt>NATURAL JOIN</dt> <dd>Implicit <code>USING</code> on every column with a shared name. <em>Don't.</em> A future <code>ALTER TABLE ADD COLUMN</code> on either side can silently change the join condition.</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 4.5</span> USING tidies up self-explanatory keys</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT * FROM orders JOIN order_items USING (order_id);
+-- one order_id column in the output, plus everything else from both tables</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.7</span> LATERAL — the correlated subquery in FROM</h2>
+
+    <p>A <code>LATERAL</code> join lets a subquery on the right side reference columns from the left side. Without <code>LATERAL</code>, the items in a <code>FROM</code> clause are independent of each other; with it, the right side is evaluated <em>once per row</em> of the left.</p>
+
+    <p>The canonical use is <strong>top-N per group</strong>:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 4.6</span> Two most recent orders per customer</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT c.id, c.name, o.placed_at, o.total
+FROM   customers c
+JOIN   LATERAL (
+         SELECT placed_at, total
+         FROM   orders
+         WHERE  customer_id = c.id    -- references the outer c.id
+         ORDER  BY placed_at DESC
+         LIMIT  2
+       ) o ON true
+ORDER  BY c.id;</code></pre>
+    </div>
+
+    <p>Without <code>LATERAL</code> the inner <code>WHERE customer_id = c.id</code> would be illegal — the subquery cannot see <code>c</code>. With it, you get exactly the rows you want with a single pass, and on a well-indexed <code>orders(customer_id, placed_at DESC)</code> the planner can serve each customer's two rows from the index directly.</p>
+
+    <div class="callout note">
+      <span class="callout-label">When to prefer LATERAL over window functions</span>
+      <p>The same top-N can be expressed with <code>ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY placed_at DESC)</code>. The window-function version scans <em>all</em> orders and ranks them; <code>LATERAL</code> with <code>LIMIT</code> probes the index per customer. For small N and many groups, <code>LATERAL</code> usually wins by a large margin.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.8</span> Semi-joins and anti-joins</h2>
+
+    <p>A <strong>semi-join</strong> returns rows of the left side that have <em>at least one</em> match on the right — but without multiplying rows the way an inner join would. Postgres recognises three idioms for this, all producing the same plan:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 4.7</span> Authors who have written at least one book</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- semi-join, the canonical spelling
+SELECT * FROM authors a
+WHERE  EXISTS (SELECT 1 FROM books b WHERE b.author_id = a.id);
+
+-- equivalent, but easier to get wrong (see § 4.9)
+SELECT * FROM authors WHERE id IN (SELECT author_id FROM books);
+
+-- a INNER JOIN with DISTINCT can also express this, but the planner
+-- usually rewrites EXISTS / IN into a "Semi Join" node directly.</code></pre>
+    </div>
+
+    <p>An <strong>anti-join</strong> is the negation: rows of the left with <em>no</em> match on the right. <code>NOT EXISTS</code> is the safe spelling:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 4.8</span> Authors with no book</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT * FROM authors a
+WHERE  NOT EXISTS (
+  SELECT 1 FROM books b WHERE b.author_id = a.id
+);
+
+-- another spelling, often produces the same plan:
+SELECT a.*
+FROM   authors a
+LEFT   JOIN books b ON b.author_id = a.id
+WHERE  b.id IS NULL;</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.9</span> The NOT IN NULL trap</h2>
+
+    <p>This is the single nastiest bug in SQL semantics. If the subquery in <code>NOT IN</code> returns even one <code>NULL</code>, the entire outer query returns <em>no rows</em>:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 4.9</span> The trap, and the fix</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- books table contains one row with author_id = NULL
+
+-- "authors who have no book" — looks right, returns ZERO rows
+SELECT * FROM authors
+WHERE  id NOT IN (SELECT author_id FROM books);
+
+-- the fix: NOT EXISTS, which handles NULLs correctly
+SELECT * FROM authors a
+WHERE  NOT EXISTS (SELECT 1 FROM books b WHERE b.author_id = a.id);</code></pre>
+    </div>
+
+    <p>Why? <code>x NOT IN (1, 2, NULL)</code> evaluates to <code>x &lt;&gt; 1 AND x &lt;&gt; 2 AND x &lt;&gt; NULL</code>. The last clause is <code>NULL</code> (three-valued logic: "unknown"), which makes the whole conjunction at best <code>NULL</code> — never <code>true</code>. The outer <code>WHERE</code> drops anything that isn't <code>true</code>.</p>
+
+    <div class="callout pitfall">
+      <span class="callout-label">Rule of thumb</span>
+      <p>Use <code>NOT EXISTS</code> for anti-joins. Reserve <code>NOT IN</code> for fixed literal lists you wrote yourself, where you know nothing can be <code>NULL</code>.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.10</span> Self-joins</h2>
+
+    <p>A table joined to itself — typically with two aliases. Useful for hierarchies (parent/child), pairwise comparisons, and gap-filling.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 4.10</span> Employee → manager lookup</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT e.name AS employee, m.name AS manager
+FROM   employees e
+LEFT   JOIN employees m ON m.id = e.manager_id;</code></pre>
+    </div>
+
+    <p>The <code>LEFT</code> ensures the CEO (whose <code>manager_id</code> is null) still appears, with a null manager.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 4.11</span> Join order, theta-joins, and the planner</h2>
+
+    <p>The order you write join clauses in is almost never the order Postgres executes them. The planner enumerates join orders and picks the cheapest by its cost model — capped by <code>join_collapse_limit</code> (default 8). Beyond that limit it falls back to the order you wrote.</p>
+
+    <p>Two terms worth knowing:</p>
+
+    <dl class="kv">
+      <dt>Equi-join</dt>  <dd>Join condition uses only <code>=</code>. Eligible for hash and merge joins; cheap.</dd>
+      <dt>Theta-join</dt> <dd>Any other operator (<code>&lt;</code>, <code>&gt;</code>, <code>BETWEEN</code>, range overlap). Restricted to nested-loop or merge with a range strategy; expensive.</dd>
+    </dl>
+
+    <p>Range-overlap joins on time intervals are the classic theta-join — they often need a custom index (GiST on a range type) or a query rewrite to be tractable.</p>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Joins, in one card</h3>
+    <dl>
+      <dt>INNER</dt>        <dd>Matches in both sides. Default for bare <code>JOIN</code>.</dd>
+      <dt>LEFT</dt>         <dd>All left rows; right columns null when unmatched.</dd>
+      <dt>FULL OUTER</dt>   <dd>Both sides preserved; nulls fill in.</dd>
+      <dt>CROSS</dt>        <dd>Cartesian product. No condition.</dd>
+      <dt>LATERAL</dt>      <dd>Right side may reference left columns. Top-N-per-group's best friend.</dd>
+      <dt>EXISTS</dt>       <dd>Semi-join. One row per match-having left row.</dd>
+      <dt>NOT EXISTS</dt>   <dd>Anti-join. <em>The safe spelling.</em></dd>
+      <dt>NOT IN</dt>       <dd>Broken on NULLs. Use only with literal lists.</dd>
+      <dt>USING (col)</dt>  <dd>Shortcut for equi-join; merges the column in the result.</dd>
+      <dt>NATURAL JOIN</dt> <dd>Don't.</dd>
+      <dt>join_collapse_limit</dt><dd>Cap on planner join-order search. Default 8.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/queries-table-expressions.html#QUERIES-JOIN">Queries: Joined Tables</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/queries-table-expressions.html#QUERIES-LATERAL">Queries: LATERAL Subqueries</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/functions-subquery.html">Subquery Expressions (EXISTS, IN, ANY, ALL)</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="schema-and-constraints.html">
+      <span class="label">← Previous</span>
+      <span class="title">III · Schema design &amp; constraints</span>
+    </a>
+    <a class="next" href="aggregates-group-by.html">
+      <span class="label">Next →</span>
+      <span class="title">V · Aggregates &amp; GROUP BY</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

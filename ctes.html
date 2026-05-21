@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTEs &amp; Recursion — Postgres Study</title>
+  <meta name="description" content="Common table expressions, the MATERIALIZED keyword, recursive CTEs, and data-modifying CTEs.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="ctes.html" aria-current="page">VII · CTEs</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">07</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter VII · Querying</span>
+      <h1>CTEs <em>&amp; recursion</em></h1>
+      <p class="standfirst">The <code>WITH</code> clause turns a query into a script — named, ordered intermediate results that can reference each other, recurse on themselves, and even modify data.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">A <strong>common table expression</strong> is a named subquery written before the main query. It exists for one statement, evaluates to a temporary relation, and can be referenced wherever a table can. Used for clarity, it splits a tangled query into named steps you can read top-to-bottom. Used recursively, it does things plain SQL cannot — tree walks, graph traversals, generating sequences. Used with <code>INSERT</code>, <code>UPDATE</code>, or <code>DELETE</code>, it captures the rows you just changed for use in the next step.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 7.1</span> Basic WITH</h2>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 7.1</span> A query as a script</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">WITH recent_orders AS (
+  SELECT * FROM orders
+  WHERE placed_at &gt;= now() - interval '30 days'
+),
+order_totals AS (
+  SELECT customer_id, sum(total) AS total
+  FROM   recent_orders
+  GROUP  BY customer_id
+)
+SELECT c.name, ot.total
+FROM   customers c
+JOIN   order_totals ot ON ot.customer_id = c.id
+ORDER  BY ot.total DESC
+LIMIT  20;</code></pre>
+    </div>
+
+    <p>Two CTEs, each referenced once. Note that <code>order_totals</code> references <code>recent_orders</code> by name — later CTEs in the same <code>WITH</code> may use earlier ones; the reverse is not allowed.</p>
+
+    <p>CTEs are scoped to the single statement they belong to. They are not views — they leave no trace after the statement ends and they don't appear in <code>pg_class</code>.</p>
+  </section>
+
+  <aside class="marginalia">
+    <span class="label">Worth noting</span>
+    For most queries you can replace any CTE with a subquery in the <code>FROM</code> clause and get an identical plan. Use CTEs when the resulting query is meaningfully easier to read top-to-bottom.
+  </aside>
+
+  <section>
+    <h2><span class="num">§ 7.2</span> MATERIALIZED — the Postgres 12 change</h2>
+
+    <p>Before Postgres 12, every CTE was an <em>optimisation fence</em>: the planner ran each CTE to completion, stored its rows in a working table, and the outer query read from that table. Predicates could not push into a CTE; statistics from the inner query could not be used outside. This made CTEs slower than equivalent subqueries in most cases.</p>
+
+    <p>Postgres 12 changed the default. A CTE that is <em>referenced exactly once</em> and is <em>not recursive</em> and has <em>no side effects</em> is now <em>inlined</em> — treated as if you'd written it as a subquery, with predicate push-down and join-order freedom. CTEs that are referenced multiple times still default to materialised, because re-evaluating them might cost more than caching.</p>
+
+    <p>Two keywords let you force the choice:</p>
+
+    <dl class="kv">
+      <dt>WITH x AS MATERIALIZED (...)</dt>     <dd>Always materialise. Same behaviour as pre-12.</dd>
+      <dt>WITH x AS NOT MATERIALIZED (...)</dt> <dd>Always inline (when safe).</dd>
+    </dl>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 7.2</span> Forcing materialisation as an optimisation barrier</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">-- Useful when an expensive aggregation is referenced many times,
+-- or when you genuinely want the planner to compute the CTE first.
+WITH stats AS MATERIALIZED (
+  SELECT region, percentile_cont(0.95) WITHIN GROUP (ORDER BY latency) AS p95
+  FROM   requests
+  GROUP  BY region
+)
+SELECT r.*, s.p95
+FROM   requests r
+JOIN   stats s USING (region)
+WHERE  r.latency &gt; s.p95;</code></pre>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-label">When to MATERIALIZE explicitly</span>
+      <p>(1) A CTE used several times whose inputs change between references (rare but possible with volatile functions). (2) A CTE you want to debug — materialising it forces the planner to actually compute that step so you can inspect it via <code>EXPLAIN ANALYZE</code>. (3) A correctness-critical optimisation fence (e.g. you must read consistent state before writing).</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 7.3</span> Recursive CTEs</h2>
+
+    <p>A <code>WITH RECURSIVE</code> clause defines a relation in terms of itself. The body is two <code>SELECT</code>s connected by <code>UNION ALL</code> (or <code>UNION</code> for deduplication): the <em>anchor</em> (non-recursive) and the <em>recursive term</em>, which references the CTE name.</p>
+
+    <p>Execution: evaluate the anchor; while the recursive term, applied to the latest batch of rows, produces new rows, keep going. Stop when it produces none.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 7.3</span> Walking a tree of categories</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">WITH RECURSIVE descendants AS (
+    -- anchor: start from the root we care about
+    SELECT id, parent_id, name, 0 AS depth, ARRAY[id] AS path
+    FROM   categories
+    WHERE  id = 1
+
+  UNION ALL
+
+    -- recursive: children of the current frontier
+    SELECT c.id, c.parent_id, c.name, d.depth + 1, d.path || c.id
+    FROM   categories c
+    JOIN   descendants d ON c.parent_id = d.id
+)
+SELECT repeat('  ', depth) || name AS tree, depth
+FROM   descendants
+ORDER  BY path;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result — indented tree walk</p>
+        <table class="result">
+          <thead><tr><th>tree</th><th>depth</th></tr></thead>
+          <tbody>
+            <tr><td>Books</td>              <td class="num">0</td></tr>
+            <tr><td>&nbsp;&nbsp;Fiction</td><td class="num">1</td></tr>
+            <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;Novels</td><td class="num">2</td></tr>
+            <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;Short stories</td><td class="num">2</td></tr>
+            <tr><td>&nbsp;&nbsp;Non-fiction</td><td class="num">1</td></tr>
+            <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;History</td><td class="num">2</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The <code>depth</code> and <code>path</code> columns are typical recursion bookkeeping: depth for pretty-printing, path to detect cycles and to give a stable ordering.</p>
+
+    <div class="callout warning">
+      <span class="callout-label">Cycle protection</span>
+      <p>If the data forms a cycle and you use <code>UNION ALL</code>, the CTE will recurse forever. Defences: (1) use <code>UNION</code> instead, which deduplicates; (2) track the path explicitly and add <code>WHERE NOT (c.id = ANY(d.path))</code>; (3) use the standard <code>CYCLE</code> clause introduced in Postgres 14, which adds a flag column and prunes automatically.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 7.4</span> The SEARCH and CYCLE clauses (PG 14+)</h2>
+
+    <p>Two standard clauses that recursive CTEs may carry, both added in Postgres 14.</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 7.4</span> SEARCH and CYCLE in one query</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">WITH RECURSIVE descendants AS (
+    SELECT id, parent_id, name FROM categories WHERE id = 1
+  UNION ALL
+    SELECT c.id, c.parent_id, c.name
+    FROM   categories c JOIN descendants d ON c.parent_id = d.id
+)
+SEARCH DEPTH FIRST BY id SET ordering   -- adds an "ordering" column
+CYCLE id SET is_cycle USING cycle_path  -- adds is_cycle bool + cycle_path array
+SELECT id, name, ordering, is_cycle
+FROM   descendants
+ORDER  BY ordering;</code></pre>
+    </div>
+
+    <p><code>SEARCH</code> chooses <em>depth-first</em> or <em>breadth-first</em> ordering. <code>CYCLE</code> stops infinite recursion safely. Both are syntactic sugar over the manual bookkeeping in § 7.3, but a much nicer one to read.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 7.5</span> Generating sequences without a table</h2>
+
+    <p>A favourite use of <code>WITH RECURSIVE</code>: produce a series of rows out of thin air. (For numbers, <code>generate_series</code> is simpler — but the pattern generalises.)</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 7.5</span> Fibonacci, in SQL</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">WITH RECURSIVE fib(i, a, b) AS (
+    VALUES (1::bigint, 0::bigint, 1::bigint)
+  UNION ALL
+    SELECT i + 1, b, a + b FROM fib WHERE i &lt; 20
+)
+SELECT i, a AS fib FROM fib;</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 7.6</span> Data-modifying CTEs</h2>
+
+    <p>Postgres lets <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, and <code>MERGE</code> appear inside a <code>WITH</code> clause, provided they use <code>RETURNING</code>. The returned rows are visible to the rest of the statement — useful for "do A, then do B with the keys A produced":</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 7.6</span> Move rows from one table to another, atomically</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">WITH moved AS (
+  DELETE FROM staging
+  WHERE   ready = true
+  RETURNING id, payload, created_at
+)
+INSERT INTO events (id, payload, created_at, archived_at)
+SELECT id, payload, created_at, now()
+FROM   moved
+RETURNING id;</code></pre>
+    </div>
+
+    <p>The delete and insert run in the same statement under the same transaction; either both succeed or neither does. There is no window in which the rows are missing from both tables, or duplicated across them.</p>
+
+    <div class="callout pitfall">
+      <span class="callout-label">A subtle rule</span>
+      <p>Sub-statements in a data-modifying CTE all see the same snapshot — the snapshot at the start of the outer statement. A <code>SELECT</code> CTE that reads from a table modified by a sibling <code>UPDATE</code> CTE will <em>not</em> see the update. If you depend on the new values, read them via <code>RETURNING</code>, not by re-querying the table.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 7.7</span> When not to use a CTE</h2>
+
+    <p>Two situations where a subquery in the <code>FROM</code> clause is the better tool:</p>
+
+    <ul>
+      <li><strong>Trivial reuse.</strong> A CTE used in one place adds a name; if the name doesn't help readability, just inline the subquery.</li>
+      <li><strong>Tight predicate push-down matters.</strong> Even with PG 12 inlining, a <code>WITH</code> reads more like a barrier than a subquery does. When you want the planner to think of the whole thing as one query, write it as one.</li>
+    </ul>
+
+    <p>And one place a CTE is the only option: when you need to reference an intermediate result <em>multiple times</em> and recomputing would change the answer — e.g. when computing percentiles or random samples.</p>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>CTEs, in one card</h3>
+    <dl>
+      <dt>WITH name AS (...)</dt>            <dd>Named subquery, scoped to one statement.</dd>
+      <dt>Default (PG 12+)</dt>              <dd>Inlined if referenced once, not recursive, no side effects. Otherwise materialised.</dd>
+      <dt>MATERIALIZED</dt>                  <dd>Force computation as a separate step. Acts as an optimisation barrier.</dd>
+      <dt>NOT MATERIALIZED</dt>              <dd>Force inlining when safe.</dd>
+      <dt>WITH RECURSIVE</dt>                <dd>Anchor <code>UNION ALL</code> recursive term, references self.</dd>
+      <dt>SEARCH DEPTH/BREADTH FIRST</dt>    <dd>Traversal order (PG 14+).</dd>
+      <dt>CYCLE id SET is_cycle USING path</dt><dd>Standard cycle detection (PG 14+).</dd>
+      <dt>Data-modifying CTE</dt>            <dd>INSERT/UPDATE/DELETE inside WITH; must RETURN; same snapshot as outer.</dd>
+      <dt>Anti-pattern</dt>                  <dd>Wrapping a single-use subquery in a CTE for "tidiness". Just use a subquery.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/queries-with.html">Queries: WITH Queries (CTEs)</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-select.html#SQL-WITH">SELECT: WITH clause reference</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="window-functions.html">
+      <span class="label">← Previous</span>
+      <span class="title">VI · Window functions</span>
+    </a>
+    <a class="next" href="full-text-search.html">
+      <span class="label">Next →</span>
+      <span class="title">VIII · Full-text search</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

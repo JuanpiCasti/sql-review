@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Schema design &amp; constraints — Postgres Study</title>
+  <meta name="description" content="Primary and foreign keys, CHECK, UNIQUE, EXCLUDE, generated columns, and how to evolve a schema without holding a long lock.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="schema-and-constraints.html" aria-current="page">III · Schema &amp; constraints</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">03</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter III · Foundations</span>
+      <h1>Schema design, <em>or, what the database refuses to allow</em></h1>
+      <p class="standfirst">A constraint is a guarantee the database makes on your behalf — a rule that no bug, no race, and no junior engineer with a <code>psql</code> prompt can violate.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">Most data corruption is preventable in the schema. Foreign keys catch the orphan rows, <code>CHECK</code> constraints catch the impossible values, exclusion constraints catch the overlapping reservations. This chapter is the constraint vocabulary: what each one enforces, what it costs, and which ones earn their keep in production schemas.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 3.1</span> <code>CREATE TABLE</code> anatomy</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 3.2</span> Primary keys — surrogate vs natural</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 3.3</span> Foreign keys and <code>ON DELETE</code> actions</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 3.4</span> <code>CHECK</code>, <code>UNIQUE</code>, <code>EXCLUDE</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 3.5</span> <code>NOT NULL</code> and defaults</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 3.6</span> Generated columns</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 3.7</span> Safe vs locking <code>ALTER TABLE</code></h2>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Constraints, in one card</h3>
+    <dl>
+      <dt><code>PRIMARY KEY</code></dt>   <dd>Unique + not null + the table's default row identity.</dd>
+      <dt><code>FOREIGN KEY</code></dt>   <dd>Row in this table must reference an existing row in the parent.</dd>
+      <dt><code>ON DELETE CASCADE</code></dt><dd>Parent delete propagates. <code>RESTRICT</code> is the safer default.</dd>
+      <dt><code>UNIQUE</code></dt>        <dd>No two rows share these values. <code>NULL</code>s do not collide.</dd>
+      <dt><code>CHECK (expr)</code></dt>  <dd>Row-level boolean. Must be <code>IMMUTABLE</code>; no subqueries.</dd>
+      <dt><code>EXCLUDE</code></dt>       <dd>"No two rows where these predicates overlap." GiST-backed.</dd>
+      <dt><code>NOT NULL</code></dt>      <dd>The cheapest, highest-leverage constraint in the catalog.</dd>
+      <dt><code>GENERATED ALWAYS AS</code></dt><dd>Column computed from other columns. Stored or virtual.</dd>
+      <dt><code>DEFERRABLE</code></dt>    <dd>Check at <code>COMMIT</code> instead of per-statement. Needed for cyclic FKs.</dd>
+      <dt>Adding NOT NULL</dt>            <dd>Use a <code>CHECK NOT VALID</code> + <code>VALIDATE</code> on big tables to avoid the long lock.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/ddl-constraints.html">DDL: Constraints</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-createtable.html">SQL: CREATE TABLE</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-altertable.html">SQL: ALTER TABLE</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/ddl-generated-columns.html">DDL: Generated Columns</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="data-types-and-null.html">
+      <span class="label">← Previous</span>
+      <span class="title">II · Data types &amp; NULL</span>
+    </a>
+    <a class="next" href="joins.html">
+      <span class="label">Next →</span>
+      <span class="title">IV · Joins</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

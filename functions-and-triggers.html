@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Functions, procedures &amp; triggers — Postgres Study</title>
+  <meta name="description" content="LANGUAGE sql vs plpgsql, volatility, procedures with embedded COMMIT, trigger kinds, and the SECURITY DEFINER trap.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="functions-and-triggers.html" aria-current="page">XVII · Functions &amp; triggers</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">17</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter XVII · Operations</span>
+      <h1>Functions &amp; triggers, <em>or, code that lives in the database</em></h1>
+      <p class="standfirst">Logic the database executes on your behalf — a tiny imperative language inside a declarative one, plus the hooks that fire automatically when a row changes.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">Stored logic is contentious — pushed too far it becomes a parallel application no one reviews, but used judiciously it gives you transactional consistency that no application-layer code can match. This chapter is the shape of the tool, not a recommendation about how much of it to use.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 17.1</span> <code>LANGUAGE sql</code> vs <code>plpgsql</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 17.2</span> Volatility — <code>IMMUTABLE</code>, <code>STABLE</code>, <code>VOLATILE</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 17.3</span> Procedures and embedded <code>COMMIT</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 17.4</span> Triggers — <code>BEFORE</code>, <code>AFTER</code>, <code>INSTEAD OF</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 17.5</span> Statement-level vs row-level triggers</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 17.6</span> <code>SECURITY DEFINER</code> and <code>search_path</code></h2>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Functions &amp; triggers, in one card</h3>
+    <dl>
+      <dt><code>CREATE FUNCTION</code></dt>    <dd>Returns a value (scalar, set, table). Cannot manage transactions.</dd>
+      <dt><code>CREATE PROCEDURE</code></dt>   <dd>No return. Can <code>COMMIT</code> / <code>ROLLBACK</code> mid-body. Called with <code>CALL</code>.</dd>
+      <dt><code>LANGUAGE sql</code></dt>       <dd>Pure SQL body. Inlinable by the planner — preferable when it fits.</dd>
+      <dt><code>LANGUAGE plpgsql</code></dt>   <dd>Loops, conditionals, exceptions. Opaque to the planner.</dd>
+      <dt><code>IMMUTABLE</code></dt>          <dd>Same inputs → same output, always. Indexable in expression indexes.</dd>
+      <dt><code>STABLE</code></dt>             <dd>Constant within a single statement. Safe as an index predicate filter.</dd>
+      <dt><code>VOLATILE</code></dt>           <dd>Default. May return different values, may have side effects.</dd>
+      <dt><code>BEFORE</code> trigger</dt>     <dd>Can modify <code>NEW</code>. Return <code>NULL</code> to skip the row.</dd>
+      <dt><code>AFTER</code> trigger</dt>      <dd>Row is already written. Right place for audit logs.</dd>
+      <dt><code>SECURITY DEFINER</code></dt>   <dd>Runs as the function's owner. Always pin <code>search_path</code>.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/sql-createfunction.html">SQL: CREATE FUNCTION</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-createprocedure.html">SQL: CREATE PROCEDURE</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/plpgsql.html">PL/pgSQL (chapter)</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/triggers.html">Triggers (chapter)</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/xfunc-volatility.html">Function Volatility Categories</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="explain-planner.html">
+      <span class="label">← Previous</span>
+      <span class="title">XVI · EXPLAIN &amp; the planner</span>
+    </a>
+    <a class="next" href="configuration-and-tuning.html">
+      <span class="label">Next →</span>
+      <span class="title">XVIII · Configuration &amp; tuning</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

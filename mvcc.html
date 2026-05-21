@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MVCC &amp; VACUUM — Postgres Study</title>
+  <meta name="description" content="How Postgres stores row versions, decides visibility, and reclaims space.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="mvcc.html" aria-current="page">XII · MVCC</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">12</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter XII · Concurrency</span>
+      <h1>MVCC &amp; VACUUM, <em>or, the immortal row</em></h1>
+      <p class="standfirst">Postgres never updates a row in place. Every change writes a new tuple; every delete merely marks the old one. The machinery that decides which version <em>you</em> see — and which long-dead ones can finally be erased — is MVCC.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede"><strong>Multi-version concurrency control</strong> is the trick that lets Postgres deliver snapshot isolation without making readers wait for writers. Each row in a table is really a chain of physical <em>tuples</em>, stamped with the transaction IDs that created and (eventually) deleted them. A query's snapshot picks exactly one version of each row to be visible. Old versions are not freed when their transaction ends — they are freed by <code>VACUUM</code>, on its own schedule, once no live snapshot can still need them.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 12.1</span> xmin, xmax, and the tuple header</h2>
+
+    <p>Every tuple stored on disk carries a small header. The two fields that matter for visibility are:</p>
+
+    <dl class="kv">
+      <dt>xmin</dt><dd>The transaction ID that <em>inserted</em> this version of the row.</dd>
+      <dt>xmax</dt><dd>The transaction ID that <em>deleted</em> (or replaced) this version. Zero if the version is still live.</dd>
+      <dt>ctid</dt><dd>The physical address — (block, offset) — of this tuple. Updates write a new tuple and leave the old one pointing at it via <code>ctid</code>, forming an update chain.</dd>
+    </dl>
+
+    <p>These are real system columns. You can select them like any other:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 12.1</span> Inspecting tuple versions</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">CREATE TABLE t (id int, val text);
+INSERT INTO t VALUES (1, 'first');
+UPDATE t SET val = 'second' WHERE id = 1;
+
+SELECT ctid, xmin, xmax, * FROM t;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result (live tuple only — the older one is dead)</p>
+        <table class="result">
+          <thead><tr><th>ctid</th><th>xmin</th><th>xmax</th><th>id</th><th>val</th></tr></thead>
+          <tbody>
+            <tr><td>(0,2)</td><td class="num">748</td><td class="num">0</td><td class="num">1</td><td>second</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>The tuple at <code>(0,1)</code> still exists on disk, with <code>xmin=747, xmax=748</code>, but it isn't visible to your snapshot. It's <em>dead</em> — waiting for VACUUM.</p>
+  </section>
+
+  <aside class="marginalia">
+    <span class="label">Why this matters</span>
+    The fact that <code>UPDATE</code> writes a new tuple is why heavily-updated tables bloat, why <code>HOT</code> updates are a big win, and why an index on a column you never query can still slow your writes down.
+  </aside>
+
+  <section>
+    <h2><span class="num">§ 12.2</span> Snapshots and visibility</h2>
+
+    <p>When a transaction takes a snapshot it captures three things: the current transaction ID counter (xmax of the snapshot), the oldest still-running transaction (xmin), and the list of in-progress transaction IDs in between (<code>xip</code>).</p>
+
+    <p>A tuple is visible to that snapshot if, roughly:</p>
+
+    <ul>
+      <li>Its <code>xmin</code> is less than the snapshot's xmax, <em>and</em> not in the in-progress list, <em>and</em> committed; <em>and</em></li>
+      <li>Its <code>xmax</code> is zero, or aborted, or still in the in-progress list, or greater than the snapshot's xmax.</li>
+    </ul>
+
+    <p>You never write this logic yourself. But it's the reason a long-running <code>SELECT</code> at Repeatable Read can still see a row that was deleted ten minutes ago: that row's <code>xmax</code> is committed, but it's <em>greater</em> than the snapshot's xmax, so to the snapshot the delete hasn't happened yet.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 12.3</span> HOT updates</h2>
+
+    <p>An ordinary <code>UPDATE</code> must update every index on the table, because the new tuple lives at a new <code>ctid</code> and every index entry points to a <code>ctid</code>. This is expensive — on a table with ten indexes, ten index writes per row update.</p>
+
+    <p>The <strong>HOT</strong> (Heap-Only Tuple) optimisation avoids this if two conditions hold:</p>
+
+    <ul>
+      <li>No indexed column is changed by the update.</li>
+      <li>The new tuple fits on the same heap page as the old one.</li>
+    </ul>
+
+    <p>When both are true, Postgres writes the new tuple on the same page, links it from the old one with an HOT chain, and <em>does not touch any index</em>. Index entries still point at the old <code>ctid</code>; the page-level chain hops them forward to the live version. HOT can also be cleaned up by routine page-level "mini-vacuums" called <em>HOT pruning</em>, which run opportunistically during normal operations.</p>
+
+    <div class="callout note">
+      <span class="callout-label">In practice</span>
+      <p>This is why leaving a little free space on each heap page matters. The storage parameter <code>fillfactor</code> (default 100) controls how packed each new page is. For update-heavy tables, dropping <code>fillfactor</code> to 80–90 dramatically increases the HOT-update rate.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 12.4</span> Dead tuples, bloat, and VACUUM</h2>
+
+    <p>A tuple is <em>dead</em> when no current or future snapshot can see it — i.e. its <code>xmax</code> committed, and the oldest snapshot's xmin is past that commit. Until <code>VACUUM</code> runs, dead tuples occupy disk space, get scanned by sequential scans, and accumulate in indexes.</p>
+
+    <p><code>VACUUM</code> does three things:</p>
+
+    <ol>
+      <li>Marks dead tuples' line pointers as reusable so future inserts can overwrite them.</li>
+      <li>Removes corresponding entries from every index on the table.</li>
+      <li>Updates the table's <em>visibility map</em> and <em>free space map</em>, and advances the relation's <code>relfrozenxid</code> to prevent transaction-ID wraparound.</li>
+    </ol>
+
+    <p>It does <em>not</em> return disk space to the OS. The pages stay allocated, just with reusable holes. To physically shrink a table you need <code>VACUUM FULL</code> (which rewrites the whole table under an <code>AccessExclusive</code> lock — never run it on a live OLTP table) or <code>pg_repack</code> (which does the same online).</p>
+
+    <div class="callout warning">
+      <span class="callout-label">The horizon</span>
+      <p>VACUUM can only remove tuples older than the <em>oldest snapshot</em> currently in use, anywhere. One forgotten <code>idle in transaction</code> session, one stuck replication slot, one abandoned <code>PREPARE TRANSACTION</code>, and your VACUUM does nothing — your tables grow without bound while VACUUM completes successfully every run. The query in § 12.6 is how you find it.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 12.5</span> Autovacuum</h2>
+
+    <p>You don't run <code>VACUUM</code> by hand. The autovacuum launcher runs in the background and triggers a vacuum on a table when its dead-tuple count crosses a threshold:</p>
+
+    <p class="lede" style="font-style: normal; font-size: 1rem; text-align: center;">
+      <code>threshold = autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor × n_live_tuples</code>
+    </p>
+
+    <p>Defaults are <code>50</code> + <code>0.2 × rows</code> — i.e. fire when dead tuples exceed 20% of the live row count. For a 100M-row table this is far too slack; tune the per-table storage parameters down:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 12.2</span> Tuning autovacuum per table</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">ALTER TABLE events SET (
+  autovacuum_vacuum_scale_factor = 0.02,   -- 2% instead of 20%
+  autovacuum_vacuum_threshold    = 1000,
+  autovacuum_analyze_scale_factor = 0.01
+);</code></pre>
+    </div>
+
+    <p>Autovacuum also runs an <em>ANALYZE</em> (to refresh planner statistics) on its own threshold, and a periodic anti-wraparound <code>VACUUM FREEZE</code> that you cannot defer.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 12.6</span> Finding what blocks VACUUM</h2>
+
+    <p>One query that earns its keep. The <code>backend_xmin</code> column of <code>pg_stat_activity</code> shows the oldest transaction ID still needed by each session. The lowest value across the cluster is the horizon below which VACUUM cannot reclaim:</p>
+
+    <div class="example">
+      <p class="caption"><span class="num">Ex. 12.3</span> The VACUUM horizon</p>
+<pre class="language-sql" data-lang="sql"><code class="language-sql">SELECT pid,
+       usename,
+       state,
+       now() - xact_start  AS xact_age,
+       backend_xmin,
+       query
+FROM pg_stat_activity
+WHERE backend_xmin IS NOT NULL
+ORDER BY age(backend_xmin) DESC
+LIMIT 10;
+
+-- and for replication slots:
+SELECT slot_name, active, xmin, catalog_xmin,
+       age(xmin) AS xmin_age
+FROM pg_replication_slots
+ORDER BY age(xmin) DESC NULLS LAST;</code></pre>
+      <div class="result-wrap">
+        <p class="result-caption">Result — the offender at the top</p>
+        <table class="result">
+          <thead><tr><th>pid</th><th>state</th><th>xact_age</th><th>backend_xmin</th><th>query</th></tr></thead>
+          <tbody>
+            <tr><td class="num">9118</td><td>idle in transaction</td><td>04:11:02</td><td class="num">8821445</td><td>SELECT * FROM staging…</td></tr>
+            <tr><td class="num">9211</td><td>active</td><td>00:00:01</td><td class="num">9012377</td><td>SELECT count(*) FROM…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 12.7</span> Wraparound</h2>
+
+    <p>Transaction IDs are 32-bit. After ~2 billion transactions, they wrap. Postgres protects against this by periodically <em>freezing</em> old tuples — replacing their <code>xmin</code> with a sentinel that means "always visible". Freezing happens during <code>VACUUM</code>, and is triggered no later than <code>vacuum_freeze_table_age</code> (default 150M) since the table was last frozen.</p>
+
+    <p>If freezing falls so far behind that wraparound becomes imminent, Postgres will refuse new transactions:</p>
+
+    <p><code>ERROR: database is not accepting commands to avoid wraparound data loss in database "x"</code></p>
+
+    <p>This is recoverable but humiliating. Monitor <code>age(datfrozenxid)</code> per database; alarm at half of <code>autovacuum_freeze_max_age</code> (default 200M).</p>
+
+    <aside class="marginalia">
+      <span class="label">PG 17+</span>
+      Recent Postgres versions add 64-bit transaction-ID tracking in some catalogs and improvements to freeze efficiency, but the 32-bit on-disk xid remains. Wraparound monitoring is still load-bearing.
+    </aside>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>MVCC, in one card</h3>
+    <dl>
+      <dt>xmin / xmax</dt>       <dd>Inserting / deleting transaction ID stamped on each tuple version.</dd>
+      <dt>ctid</dt>              <dd>Physical (block, offset) of a tuple. Update chains link old → new.</dd>
+      <dt>Snapshot</dt>          <dd>(xmin, xmax, xip) triple. Visibility is purely a function of these vs the tuple's stamps.</dd>
+      <dt>HOT update</dt>        <dd>Update that touches no indexed column and fits on the same page → skips all index writes.</dd>
+      <dt>fillfactor</dt>        <dd>Drop to 80–90 on update-heavy tables to make HOT updates likely.</dd>
+      <dt>VACUUM</dt>            <dd>Reclaims dead tuples, updates visibility/free-space maps, advances <code>relfrozenxid</code>.</dd>
+      <dt>VACUUM FULL</dt>       <dd>Rewrites the table. Takes AccessExclusive. <em>Don't.</em> Use <code>pg_repack</code>.</dd>
+      <dt>backend_xmin</dt>      <dd>The oldest tx ID a session still needs. The minimum across the cluster is the VACUUM horizon.</dd>
+      <dt>Wraparound</dt>        <dd>32-bit xids. Monitor <code>age(datfrozenxid)</code>; freeze before wraparound forces a shutdown.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/mvcc.html">Concurrency Control (MVCC)</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/routine-vacuuming.html">Routine Vacuuming</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/storage-page-layout.html">Storage: Page Layout</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="isolation-levels.html">
+      <span class="label">← Previous</span>
+      <span class="title">XI · Isolation levels</span>
+    </a>
+    <a class="next" href="locking-deadlocks.html">
+      <span class="label">Next →</span>
+      <span class="title">XIII · Locking &amp; deadlocks</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

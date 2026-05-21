@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Replication &amp; WAL — Postgres Study</title>
+  <meta name="description" content="The write-ahead log, streaming replication, logical replication, synchronous commit, failover, and point-in-time recovery.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="replication-and-wal.html" aria-current="page">XIX · Replication &amp; WAL</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">19</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter XIX · Operations</span>
+      <h1>Replication &amp; WAL, <em>or, durability past the disk</em></h1>
+      <p class="standfirst">A log of every change the server has ever made, streamed to a hot standby, replayed on failover, and archived for point-in-time recovery.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">Every committed write in Postgres lands in the write-ahead log before it touches the heap. That log is what makes crash recovery work — and it's the substrate every form of replication is built on. This chapter is the durability story from disk to standby to off-site archive.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 19.1</span> What WAL is and how it gets written</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 19.2</span> Physical replication — streaming, replication slots</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 19.3</span> Logical replication and <code>wal_level = logical</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 19.4</span> Synchronous vs asynchronous commit</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 19.5</span> Failover, <code>pg_rewind</code>, replication lag</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 19.6</span> PITR with <code>pg_basebackup</code> + WAL archive</h2>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Replication &amp; WAL, in one card</h3>
+    <dl>
+      <dt>WAL</dt>                                <dd>Append-only log written before any heap change. Crash recovery replays it.</dd>
+      <dt><code>wal_level</code></dt>             <dd><code>replica</code> for streaming, <code>logical</code> for logical replication.</dd>
+      <dt>Streaming replication</dt>              <dd>Physical: standby applies the primary's WAL byte-for-byte. Same Postgres version.</dd>
+      <dt>Replication slot</dt>                   <dd>Server-side bookmark that prevents WAL deletion before the standby has consumed it. Watch for unbounded growth.</dd>
+      <dt>Hot standby</dt>                        <dd>Streaming standby that also accepts read-only queries.</dd>
+      <dt>Logical replication</dt>                <dd>Decoded row changes per publication/subscription. Cross-version, partial schemas, conflict handling.</dd>
+      <dt><code>synchronous_commit</code></dt>    <dd><code>on</code>: wait for fsync. <code>remote_apply</code>: wait for standby replay. <code>off</code>: fast, lossy.</dd>
+      <dt><code>pg_rewind</code></dt>             <dd>Resync a diverged former primary against the new one without a full base backup.</dd>
+      <dt><code>pg_basebackup</code></dt>         <dd>One-shot binary copy of the cluster. Foundation of PITR.</dd>
+      <dt>PITR</dt>                               <dd>Restore a base backup, replay archived WAL up to a chosen LSN or timestamp.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/wal-intro.html">Reliability and the Write-Ahead Log</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/runtime-config-replication.html">Replication (config)</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/warm-standby.html">Log-Shipping Standby Servers</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/logical-replication.html">Logical Replication</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/continuous-archiving.html">Continuous Archiving and PITR</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="configuration-and-tuning.html">
+      <span class="label">← Previous</span>
+      <span class="title">XVIII · Configuration &amp; tuning</span>
+    </a>
+    <a class="next" href="index.html">
+      <span class="label">Next →</span>
+      <span class="title">Back to contents</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

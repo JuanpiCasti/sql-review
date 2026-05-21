@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Partitioning — Postgres Study</title>
+  <meta name="description" content="Declarative partitioning in Postgres: RANGE, LIST, HASH, partition pruning, attaching and detaching without long locks.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="partitioning.html" aria-current="page">XV · Partitioning</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">15</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter XV · Storage</span>
+      <h1>Partitioning, <em>or, when one table isn't enough</em></h1>
+      <p class="standfirst">A single logical table backed by many physical ones. The planner prunes the partitions it doesn't need; old data drops in a single <code>ALTER TABLE</code>; the application still writes one <code>INSERT</code>.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">Past a certain row count, a heap stops being the right shape — vacuum takes forever, indexes are taller than they need to be, and dropping six months of data means a <code>DELETE</code> the size of the moon. Declarative partitioning, added in PG 10 and refined every release since, gives you the operational handles to keep a large table healthy.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 15.1</span> Declarative partitioning vs inheritance</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 15.2</span> <code>RANGE</code>, <code>LIST</code>, <code>HASH</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 15.3</span> Partition pruning and the planner</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 15.4</span> Attaching and detaching without long locks</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 15.5</span> Default partitions and partition-wise joins</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 15.6</span> Pitfalls — no global indexes, <code>UNIQUE</code> must include the partition key</h2>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Partitioning, in one card</h3>
+    <dl>
+      <dt><code>PARTITION BY RANGE</code></dt><dd>Time series, monotonic IDs. The most common choice.</dd>
+      <dt><code>PARTITION BY LIST</code></dt> <dd>Discrete keys: region, tenant, status.</dd>
+      <dt><code>PARTITION BY HASH</code></dt> <dd>Spread writes evenly when no natural key exists.</dd>
+      <dt>Partition pruning</dt>              <dd>Planner skips partitions whose constraint excludes the <code>WHERE</code>. Only triggers on the partition key.</dd>
+      <dt><code>ATTACH PARTITION</code></dt>  <dd>Bring a pre-loaded table in. Use <code>CONCURRENTLY</code>-equivalent patterns to avoid the <code>ACCESS EXCLUSIVE</code> lock.</dd>
+      <dt><code>DETACH PARTITION CONCURRENTLY</code></dt><dd>The clean way to drop old data.</dd>
+      <dt>Default partition</dt>              <dd>Catches anything that doesn't match. Adding new partitions locks the default.</dd>
+      <dt>Global indexes</dt>                 <dd>Don't exist. Every index is per-partition.</dd>
+      <dt><code>UNIQUE</code> / <code>PRIMARY KEY</code></dt><dd>Must include the partition key. Non-negotiable.</dd>
+      <dt>Foreign keys</dt>                   <dd>You <em>can</em> reference a partitioned table (PG 12+). Cascades can be slow.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/ddl-partitioning.html">DDL: Table Partitioning</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-createtable.html">SQL: CREATE TABLE (PARTITION BY)</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/sql-altertable.html">SQL: ALTER TABLE … DETACH PARTITION</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="indexes.html">
+      <span class="label">← Previous</span>
+      <span class="title">XIV · Indexes</span>
+    </a>
+    <a class="next" href="explain-planner.html">
+      <span class="label">Next →</span>
+      <span class="title">XVI · EXPLAIN &amp; the planner</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>

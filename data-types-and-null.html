@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data types &amp; NULL — Postgres Study</title>
+  <meta name="description" content="The Postgres type system, timestamp pitfalls, arrays and ranges, and the three-valued logic of NULL.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="mark"></span> Postgres Study <em>— a review</em></a>
+  <nav>
+    <a href="index.html">Contents</a>
+    <a href="data-types-and-null.html" aria-current="page">II · Data types &amp; NULL</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <header class="masthead">
+    <div class="chapter-no">02</div>
+    <div class="title-block">
+      <span class="eyebrow">Chapter II · Foundations</span>
+      <h1>Data types, <em>and the shape of nothing</em></h1>
+      <p class="standfirst">Numbers that lie, timestamps that drift across time zones, text that pretends to be three different types, and a value that compares equal to neither itself nor its absence.</p>
+    </div>
+  </header>
+
+  <section>
+    <p class="lede">Before any of the harder Postgres mechanics make sense, the type system has to be in your head. Most of the trouble engineers hit in real codebases — silent rounding, surprise time-zone shifts, queries that return nothing because a single column was <code>NULL</code> — comes from misunderstanding what a column actually <em>contains</em>. This chapter is the ground-floor reference.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 2.1</span> The type hierarchy at a glance</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 2.2</span> Numerics — <code>numeric</code>, <code>bigint</code>, <code>float8</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 2.3</span> <code>text</code> vs <code>varchar</code> vs <code>char</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 2.4</span> <code>timestamptz</code> vs <code>timestamp</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 2.5</span> Arrays and ranges</h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 2.6</span> NULL, three-valued logic, <code>IS DISTINCT FROM</code></h2>
+  </section>
+
+  <section>
+    <h2><span class="num">§ 2.7</span> Domains and custom types</h2>
+  </section>
+
+  <div class="cheat-sheet">
+    <h3>Data types, in one card</h3>
+    <dl>
+      <dt><code>numeric</code></dt>      <dd>Exact arbitrary-precision. Use for money.</dd>
+      <dt><code>float8</code></dt>       <dd>IEEE 754 double. Fast, lossy. Never for money.</dd>
+      <dt><code>text</code></dt>         <dd>The right default. <code>varchar(n)</code> only when an external system imposes the limit.</dd>
+      <dt><code>timestamptz</code></dt>  <dd>UTC instant. The right default for "when did this happen."</dd>
+      <dt><code>timestamp</code></dt>    <dd>Wall-clock with no zone. Almost always wrong.</dd>
+      <dt><code>NULL</code></dt>         <dd>"Unknown." <code>NULL = NULL</code> is <code>NULL</code>, not true.</dd>
+      <dt><code>IS DISTINCT FROM</code></dt><dd>The equality you actually wanted across nullable columns.</dd>
+      <dt>Arrays</dt>                    <dd><code>int[]</code>, <code>text[]</code>. GIN-indexable. Don't model relations with them.</dd>
+      <dt>Ranges</dt>                    <dd><code>tstzrange</code>, <code>int4range</code>. Pair with <code>EXCLUDE</code> for non-overlap constraints.</dd>
+    </dl>
+  </div>
+
+  <section class="further">
+    <h4>Further reading</h4>
+    <ul>
+      <li><a href="https://www.postgresql.org/docs/current/datatype.html">Data Types (chapter)</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/datatype-datetime.html">Date/Time Types</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/functions-comparison.html">Comparison Functions and Operators</a></li>
+      <li><a href="https://www.postgresql.org/docs/current/rangetypes.html">Range Types</a></li>
+    </ul>
+  </section>
+
+  <nav class="chapter-nav">
+    <a class="prev" href="index.html">
+      <span class="label">← Back</span>
+      <span class="title">Contents</span>
+    </a>
+    <a class="next" href="schema-and-constraints.html">
+      <span class="label">Next →</span>
+      <span class="title">III · Schema design &amp; constraints</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  Postgres Study <span class="ornament">·</span> a personal review <span class="ornament">·</span> built to be read
+</footer>
+
+<script src="assets/prism.js"></script>
+<script src="assets/prism-sql.js"></script>
+</body>
+</html>
